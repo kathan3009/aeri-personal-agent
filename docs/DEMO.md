@@ -11,7 +11,7 @@ This is the version that works today with no sponsor keys. Sample data is labele
 3. **Share a recipe.** Tap **+** → *Recipe video link*, paste a public YouTube link, and tap *Make a shopping list*. Aeri says plainly that it made a **sample recipe** because video understanding isn't connected. An amber *Approve your shopping list* dock appears above the composer, and Tasks gets an amber dot.
 4. **Review.** Tap the dock. The list shows the exact items, with *Checked against your kitchen: Tomatoes: you have 2, buying 2 more*. Change servings, then remove an item.
 5. **Approve.** Show that a quick tap does nothing, then press and hold *Hold to approve*. The track moves to 2 of 5.
-6. **Open the store.** Without Kernel, Aeri opens the retailer's site, and the card says *Aeri hasn't placed an order* and lists the items to add yourself. Tap *Open the store* to show the handoff.
+6. **Open the store.** Without Kernel, Aeri opens the retailer's site in an in-app browser, and the card says *Aeri hasn't placed an order* and lists the items to add yourself. Tap *Open the store* to show the handoff; return to Tasks and use *Open store in Aeri* to review it again.
 7. **Record the order.** After paying at the store, enter its order number and tap *Save order number* (rehearse with an obvious test value). Then tap *It arrived*. Memory now contains the purchased items.
 8. **Scan the kitchen.** Tap **+** → *Choose a kitchen video*. Memory opens on *Check what I saw* with **Sample** items. Nothing is pre-checked; check two items and tap *Remember 2 items*. Only those two change memory.
 9. **Preferences.** In Memory, add *Clothing sizes: Shirt M, shoes 9*. This is where non-grocery shopping context lives.
@@ -22,7 +22,7 @@ Run the same flow, with these differences once each key has passed its own live 
 
 - **Gemini:** step 3 reads the real recipe in the video, and step 8 reads the real kitchen video. Check the extracted quantities before relying on the list.
 - **Neon AI Gateway:** open questions get real answers. A gateway failure shows *Neon AI Gateway: <reason>* inline with *Try again*, with secrets removed.
-- **Kernel:** step 6 opens a private live browser that adds only the approved items, and stops before checkout and payment. Verify items, quantities and availability in the live view before saying anything was added.
+- **Kernel:** step 6 opens a private live browser in Aeri. With Gateway configured, the agent tries to add only approved items and stops before checkout and payment. Verify actual cart contents, quantities, availability, and price in the live view before saying anything was added.
 - **In-app voice (Gemini):** tap the mic, speak a thought such as "We used two eggs", tap *Finish speaking*, and hear Aeri's reply. Continue with another turn in the same sheet.
 - **AgentMail:** show receipt evidence only after a signed webhook has actually arrived.
 

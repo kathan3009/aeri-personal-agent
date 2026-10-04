@@ -41,7 +41,7 @@ Copy values into the root `.env`; never put API keys in `EXPO_PUBLIC_*` variable
 | Exa | `EXA_API_KEY` | Product research endpoint |
 | AgentMail | `AGENTMAIL_WEBHOOK_SECRET` | Signed inbound receipt evidence, queued for review |
 
-The user approves the exact draft items before the browser starts. Aeri never submits payment. Opening a checkout is **not** a placed order; the user records the merchant's order reference after checkout and confirms delivery before purchased items enter inventory. Retailer login, prices, availability, and product matching require a live store rehearsal after Kernel/Gateway credentials arrive.
+The user approves the exact draft items before the browser starts. The store or Kernel live view now opens in an in-app browser for cart review. Aeri never submits payment. Opening a checkout is **not** a placed order; the user records the merchant's order reference after checkout and confirms delivery before purchased items enter inventory. Retailer login, prices, availability, and product matching require a live store rehearsal after Kernel/Gateway credentials arrive. The planned multi-retailer authentication and final-order approval flow is in [BUILD_PLAN.md](BUILD_PLAN.md).
 
 ## Project layout
 

@@ -7,6 +7,7 @@ import { useFeedback } from '../lib/feedback';
 import { haptic } from '../lib/haptics';
 import { useNav } from '../lib/nav';
 import { isReceived } from '../lib/pending';
+import { openRetailerBrowser } from '../lib/retailer-browser';
 import { c, host, quantity, radius, t, titleCase } from '../lib/theme';
 import { LargeHeader } from './Header';
 import { Fill, Reveal } from './motion';
@@ -62,7 +63,15 @@ function CartCard({ cart }: { cart: Cart }) {
   };
   const openStore = async () => {
     const result = await act<{ url: string; note: string }>('checkout');
-    if (result?.url) { haptic.success(); void Linking.openURL(result.url); }
+    if (result?.url) {
+      haptic.success();
+      try { await openRetailerBrowser(result.url); }
+      catch (error) { toast((error as Error).message, 'error'); }
+    }
+  };
+  const reviewStore = async (url: string) => {
+    try { await openRetailerBrowser(url); }
+    catch (error) { toast((error as Error).message, 'error'); }
   };
   const findLinks = async () => {
     try { setBusy('research'); setSuggestions(await request<Suggestions>(`/v1/carts/${cart.id}/research`, { method: 'POST' })); }
@@ -117,16 +126,16 @@ function CartCard({ cart }: { cart: Cart }) {
     {cart.status === 'approved' && <>
       {disclosure(`${items(cart.items.length)} approved`)}
       <Button label="Open the store" icon={Store} loading={busy === 'checkout'} onPress={() => void openStore()} style={{ marginTop: 16 }} />
-      <Text style={styles.fine}>{providers?.kernel ? 'Aeri opens a private browser and adds these items. You sign in, check the cart, and pay there.' : 'Aeri opens the store’s website. You add the items and pay there.'}</Text>
+      <Text style={styles.fine}>{providers?.kernel ? 'Aeri opens a private browser and tries to add these items. Review the actual cart in Aeri before paying.' : 'Aeri opens the store in Aeri. You add the items, review the cart, and pay there.'}</Text>
     </>}
 
     {cart.status === 'checkout_ready' && <>
       <View style={styles.note}>
         <Text style={[t.subhead, { color: c.ink }]}>{cart.checkout?.note ?? 'The store is open. Finish checkout there.'}</Text>
-        <Text style={[t.footnote, { marginTop: 6 }]}>Aeri hasn't placed an order. When you've paid, add the order number from the store's confirmation.</Text>
+        <Text style={[t.footnote, { marginTop: 6 }]}>Check the store, items, quantities, substitutions, and final total. Aeri hasn't placed an order. After paying, add the order number from the store's confirmation.</Text>
       </View>
       {disclosure(cart.checkout?.mode === 'kernel' ? `${items(cart.items.length)} approved` : `${items(cart.items.length)} to add at the store`)}
-      {cart.checkoutUrl && <Button label="Open the store again" icon={ExternalLink} tone="plain" onPress={() => void Linking.openURL(cart.checkoutUrl!)} style={{ alignSelf: 'flex-start', marginTop: 4 }} />}
+      {cart.checkoutUrl && <Button label={cart.checkout?.mode === 'kernel' ? 'Review store cart' : 'Open store in Aeri'} icon={ExternalLink} tone="plain" onPress={() => void reviewStore(cart.checkoutUrl!)} style={{ alignSelf: 'flex-start', marginTop: 4 }} />}
       <Group style={[styles.inner, { marginTop: 4 }]}><Field label="Order number" value={reference} onChangeText={setReference} placeholder="From the store's confirmation" autoCapitalize="characters" autoCorrect={false} returnKeyType="done" /></Group>
       <Button label="Save order number" disabled={!reference.trim()} loading={busy === 'ordered'} onPress={async () => { if (await act('ordered', { reference: reference.trim() })) { haptic.success(); setReference(''); } }} style={{ marginTop: 16 }} />
     </>}

@@ -2,6 +2,8 @@
 
 **Updated:** October 4, 2026. **Credit snapshot:** Neon refreshed ~11:35 AM PDT; other providers checked ~11:20 AM PDT. This is a plan, not a claim that the unbuilt steps work. Account balances can change; recheck them before activating a paid service. The repository stays private under `kathan3009`.
 
+**Claude, start here:** Work in this repository on `polish/calm-ui-and-cart-demo`. Read this plan, [README.md](README.md), [provider setup](docs/PROVIDER_SETUP.md), and the credential map below. The ignored root `.env` already contains the private API access token, Neon database URL, Exa key, and Kernel key; `apps/mobile/.env.local` contains only the public API URL. Never print or commit secret values. Run `npm ci`, `npm run typecheck`, and `npm test`, then build **P0** and **P1** in the sequence below. `npm run dev:api` and `npm run dev:mobile` start the local app. Use fixtures for checkout and paid services until their live-test boundaries are satisfied. Leave unrelated untracked files alone.
+
 ## Product contract
 
 Aeri turns a request such as “Make the pasta in this video, use the tomatoes I have, buy the cheapest acceptable ingredients within 3 miles, and keep the delivered total under $30” into a verified purchase proposal. It remembers confirmed household facts, searches multiple retailers, explains the tradeoffs, fills a cart, and can submit an order only after a separate approval of the **final merchant, items, substitutions, delivery choice, and total**. If final-price or availability evidence is missing, Aeri labels it as unknown and asks the user to finish at the merchant.
@@ -42,6 +44,14 @@ Mobile voice / text / video / share link
 7. **Purchase authorization.** Capture the final merchant checkout screen: exact items, quantities, substitutions, address, slot, fees, tip, tax, and total. The mobile app issues a short-lived, single-use approval bound to that snapshot and a maximum amount. Any price increase, product change, address change, or expiry invalidates it. A deterministic submit action, outside the general browser agent tool, may click the final order button only after this approval and only if the retailer supports a reliable confirmation path. Use a payment method already saved at that merchant; Aeri never receives raw card numbers. If login, MFA, CAPTCHA, payment entry, or reliable final-total verification blocks this path, hand control to the user at the merchant checkout. Never retry order submission blindly; first check whether an order was created.
 8. **Close the loop.** Mark `ordered` only on a merchant order ID/confirmation, not on a click. AgentMail can ingest a signed inbound receipt as evidence; the email content itself is untrusted and must be matched to merchant/order/item details. On delivery, compare **fulfilled items and substitutions** with the plan, ask the user to resolve differences, and then add what actually arrived to inventory. A failed or partial order does not update pantry memory.
 
+### Retailer login and visible cart review
+
+Each retailer gets a separate, user-approved Kernel browser profile and Managed Auth connection. Aeri opens the Kernel-hosted login flow in the phone's in-app browser; the user completes password, SSO, or MFA there. The LLM receives neither credentials nor one-time codes. Store only opaque connection/profile IDs and connection state in Neon. Launch the shopping browser with that profile, check whether the session is still valid, and ask the user to reconnect when necessary. A user can disconnect a merchant, deleting Aeri's connection/profile and receiving instructions to revoke any still-valid session at the retailer. Kernel's [Managed Auth guide](https://www.kernel.sh/ai-library/agent-identity-how-to-authenticate-an-ai-browser-agent) describes the profile flow and its limits, including unsupported passkey-only flows. The Free plan currently lists three Managed Auth connections; confirm account limits before connecting more merchants.
+
+The phone's **Review store cart** action opens the *same* Kernel browser session through its interactive live-view URL, displayed by Expo WebBrowser inside Aeri. The user sees the actual merchant page and can correct products or take over. Kernel documents [live viewing and control](https://www.kernel.sh/docs/browsers/live-view); Expo documents the [native in-app browser sheet](https://docs.expo.dev/versions/latest/sdk/webbrowser/). The native browser handoff is now wired in the mobile app, but it still needs an on-device, logged-in retailer rehearsal. The current API persists the token-bearing live-view URL in cart state; replace that with a short-lived server-issued link tied to an authenticated Aeri session before production. Pause browser-agent actions while the user is reviewing, avoid session replay on login/payment screens, and destroy the active browser after checkout or timeout.
+
+Aeri's own cart summary remains visible in Tasks before the handoff. For future agent-submitted orders, close the live view, re-read the merchant's final checkout summary, compare it to the approved plan, and show a **second native approval screen** with merchant, exact items, substitutions, address, slot, tax, fees, tip, and maximum total. The general agent tool cannot press “Place order.” Only a controlled submit operation with a valid one-time approval can do that. Today the user completes payment in the merchant page and records the confirmation number; Aeri never auto-orders. If a merchant blocks automation, login, or total verification, the user takes over rather than Aeri claiming success.
+
 Official retailer integrations can replace individual browser adapters without changing the planner. [Instacart's Developer Platform](https://docs.instacart.com/developer_platform_api/guide/concepts/shopping_list) is one optional shopping-list/deep-link adapter, not Aeri's core. Its developer key and production approval are separate prerequisites; its [getting-started guide](https://docs.instacart.com/developer_platform_api/get_started/overview/) says production access commonly takes 30–40 days. For the hackathon, use Kernel for the merchants we can actually rehearse. Do not promise universal coverage: some sites block automation or hide final totals until login.
 
 ## Video memory: where it lives and how it changes
@@ -81,6 +91,28 @@ Balances below come from the read-only [account audit](docs/ACCOUNT_STATUS.md), 
 | **CodeRabbit** | Optional code review | $1,000 usage-credit claim details still pending | Review final diff if available; not on the shopping runtime path |
 
 Neon Object Storage/Functions are advertised on the stack but are **not wired** in Aeri. Private short-lived video storage and background jobs are potential uses once their availability and billing boundary are verified. We will not consume Neon/Fly card-backed services on the assumption that a posted credit prevents charges.
+
+## Credential handoff for Claude
+
+**Do not paste real secret values into this tracked file, a prompt, Git, an Expo `EXPO_PUBLIC_*` variable, logs, or a screenshot.** Claude working in this same local repository can read the ignored root `.env` and `apps/mobile/.env.local`; Git ignores both. The tracked `.env.example` lists placeholders. For a different machine or a future deployment, transfer secrets through an appropriate secret manager and add them as server-side environment variables. Check presence without printing values. A posted sponsor credit does not itself create an API key.
+
+| Variable or secret | Where it belongs | State on October 4 | What it enables / where to obtain it |
+| --- | --- | --- | --- |
+| `APP_ACCESS_TOKEN` | Root `.env`, API only; entered as access code on phone | **Present locally** | Private `/v1` API access; never embed in the mobile bundle |
+| `DATABASE_URL` | Root `.env`, API only | **Present locally** | Neon Postgres; project/branch connection string from Neon console |
+| `EXA_API_KEY` | Root `.env`, API only | **Present locally** | Candidate product search; Exa dashboard |
+| `KERNEL_API_KEY` | Root `.env`, API only | **Present locally** | Kernel sessions; existing key is scoped to hackathon org/Default project |
+| `KERNEL_RETAILER_URL` | Root `.env`, API only | **Present locally** | Current single-store demo target; retire as the multi-retailer adapters land |
+| `NEON_AI_GATEWAY_API_KEY` | Root `.env`, API only | **Missing locally; $500 Gateway credit posted** | Mastra reasoning and browser planning; generate/configure through the Neon AI Gateway console without exposing it to the app |
+| `NEON_AI_GATEWAY_BASE_URL` | Root `.env`, API only | **Missing locally** | Gateway branch endpoint; copy the bare base URL from Neon, without `/v1` |
+| `NEON_AI_GATEWAY_MODEL` | Root `.env`, API only | **Not set; code defaults to `gpt-5-mini`** | Select a model actually listed on this Gateway branch before a live call |
+| `GEMINI_API_KEY` | Root `.env`, API only | **Missing locally; separate from hackathon Gateway credit** | Public YouTube video, kitchen video, and in-app voice understanding; obtain from a funded or free-safe Google account before use |
+| `GEMINI_VIDEO_MODEL`, `GEMINI_AUDIO_MODEL` | Root `.env`, API only | **Not set; code has defaults** | Confirm these model IDs are available to the Gemini key; update if the catalog differs |
+| `AGENTMAIL_WEBHOOK_SECRET` | Root `.env`, API only | **Missing; webhook not created** | Verify signed inbound receipt events after the API has a public HTTPS URL; AgentMail console |
+| `EXPO_PUBLIC_API_URL` | `apps/mobile/.env.local` | **Present locally** | API origin only; this variable is public in the mobile bundle and must never hold a secret |
+| `PORT`, `HOST`, `DATA_DIR` | Root `.env` | **Present locally** | Local API configuration, not sponsor credentials |
+
+No retailer usernames, passwords, MFA seeds, card numbers, or cookies go into these files. The planned Kernel Managed Auth connection and browser profile hold merchant login state. `FLY_API_TOKEN` is unnecessary for local work and is **not** configured here; deploy only after the card-spend boundary is resolved. Mastra hosted credits, Executor, assistant-ui, and CodeRabbit need no runtime secret in the present app.
 
 ## Build sequence and acceptance gates
 
