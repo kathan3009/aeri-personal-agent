@@ -1,8 +1,10 @@
 # Aeri
 
-Aeri is a private iOS/Android personal shopping agent. It remembers confirmed kitchen items and preferences, turns a public YouTube recipe into a shopping plan, lets you approve a cart, and opens a retailer checkout. A kitchen video produces observations for review. Text, voice notes, and a paired phone number can update the same memory.
+Aeri is a private, iOS-first personal shopping agent (Android is supported). It remembers confirmed kitchen items and preferences, turns a public YouTube recipe into a shopping plan, lets you approve a cart, and opens a retailer checkout. A kitchen video produces observations for review. Text, voice notes, and a paired phone number can update the same memory.
 
-The repository is a mobile app plus a private API. There is no consumer web app. The mobile interface uses the MIT-licensed native [assistant-ui](https://www.assistant-ui.com/docs/react-native) library with a restrained sky-blue React Native design. Its bottom navigation uses native Liquid Glass on supported iPhones and a readable opaque surface elsewhere.
+The repository is a mobile app plus a private API. There is no consumer web app. The conversation uses the MIT-licensed native [assistant-ui](https://www.assistant-ui.com/docs/react-native) library.
+
+The interface is designed iPhone-first: SF Pro on Apple's text-style scale, SF Symbols for navigation, haptics, a light sky palette with one deep accent, and glass only on floating elements (native Liquid Glass on iOS 26, the system blur material on earlier iPhones, an opaque surface on Android). Every state has one primary action. Cart approval is a deliberate press-and-hold, and Aeri never pays or claims an order without the store's order number. Motion is limited to the launch reveal and responses to what you do, and it follows the system Reduce Motion setting.
 
 ## Run now, without sponsor keys
 
@@ -20,11 +22,11 @@ In a second terminal:
 npm run dev:mobile
 ```
 
-Open the Expo QR code on a phone on the same Wi-Fi network (or use an emulator). Enter the API address shown by setup and the access code stored in the ignored root `.env`. The API address can be changed on the connection screen; `localhost` works only in a simulator on the same machine. On iOS Simulator use `http://localhost:8787`; on an Android emulator use `http://10.0.2.2:8787`.
+On your iPhone, install Expo Go from the App Store, join the same Wi-Fi as your computer, and scan the QR code with the Camera app. Enter the API address shown by setup (your computer's LAN IP) and the access code stored in the ignored root `.env`. Liquid Glass, SF Symbols, haptics, camera, microphone and the phone dialer only show their real behavior on a device. The API address can be changed on the connection screen; `localhost` works only in a simulator on the same machine. On iOS Simulator use `http://localhost:8787`; on an Android emulator use `http://10.0.2.2:8787`.
 
 To inspect the same React Native screens locally without a device, run `npx expo start --web --host localhost` from `apps/mobile` and open the printed localhost URL. Connect to `http://127.0.0.1:8787` with the access code in `.env`. This browser build is a development preview; the delivered product remains the iOS/Android app. Preview credentials are kept in browser session storage, while iOS/Android use SecureStore. Device camera, microphone, phone calls, and native Liquid Glass still require a phone or simulator.
 
-Key-free mode supports chat commands such as `I have 3 eggs`, `We used 2 eggs`, and `My shirt size is medium`. Pasting a YouTube link creates a **clearly marked demo recipe** and a draft missing-ingredient cart. Uploading a kitchen video produces **clearly marked sample observations** for the confirmation UI. It does not pretend to understand the video without Gemini. Inventory, messages, tasks and events persist locally in ignored `.data/state.json`.
+Key-free mode supports chat commands such as `I have 3 eggs`, `We used 2 eggs`, and `My shirt size is medium`. Pasting a YouTube link creates a **clearly marked sample recipe** and a draft missing-ingredient list for review. Uploading a kitchen video produces **clearly marked sample observations** for the confirmation UI. It does not pretend to understand the video without Gemini. Inventory, messages, tasks and events persist locally in ignored `.data/state.json`.
 
 ## Activate providers
 
