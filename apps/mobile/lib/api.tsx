@@ -1,5 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
-import { Platform } from 'react-native';
+import { AppState as NativeAppState, Platform } from 'react-native';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { AppState } from '@personal-agent/core';
 
@@ -85,6 +85,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return request<T>(path, { method: 'POST', body: form });
   }, [request]);
   const frame = useCallback((scanId: string, name: string) => settings ? { uri: `${settings.url.replace(/\/$/, '')}/v1/scans/${encodeURIComponent(scanId)}/frames/${encodeURIComponent(name)}`, headers: { Authorization: `Bearer ${settings.token}` } } : null, [settings]);
+  // Reopening the app shows what changed while it was away (a finished video, a delivered order).
+  useEffect(() => {
+    const subscription = NativeAppState.addEventListener('change', next => { if (next === 'active') void refresh(); });
+    return () => subscription.remove();
+  }, [refresh]);
   // While Aeri is working in the background (video, store checks), keep the screens current.
   const working = !!state && (state.scans.some(s => s.status === 'processing') || state.tasks.some(t => t.status === 'running') || state.photoSearches.some(s => s.status === 'searching') || state.proposals.some(p => p.status === 'searching') || state.carts.some(c => c.checkout?.status === 'preparing'));
   useEffect(() => {

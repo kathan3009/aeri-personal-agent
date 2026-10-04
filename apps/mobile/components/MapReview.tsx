@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react';
-import { Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { BackHandler, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check, CircleAlert, Eye, Package, Shirt, X } from 'lucide-react-native';
 import { formatTimestamp, isClearSighting, type Correction, type Observation, type Place, type Scan, type Unit } from '@personal-agent/core';
 import { useApp } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
 import { haptic } from '../lib/haptics';
+import { useNav } from '../lib/nav';
 import { c, quantity, radius, t, titleCase } from '../lib/theme';
 import { Pop, Reveal, Shimmer } from './motion';
 import { Aura, Button, Dot, Field, Group, Sheet, Tag } from './ui';
@@ -55,7 +56,24 @@ export function MapCard({ scan }: { scan: Scan }) {
   </>;
 }
 
+/**
+ * iOS shows the review as a native page sheet. Android draws edge-to-edge, where a dialog window leaves the system bars
+ * uncovered, so there the review is rendered as a full-screen layer at the app root instead (see `ReviewLayer`).
+ */
 export function MapReview({ scan, visible, onClose }: { scan: Scan; visible: boolean; onClose: () => void }) {
+  const { openReview } = useNav();
+  useEffect(() => { if (Platform.OS !== 'ios' && visible) { openReview(scan.id); onClose(); } }, [visible, scan.id, openReview, onClose]);
+  if (Platform.OS !== 'ios') return null;
+  return <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}><ReviewBody scan={scan} onClose={onClose} /></Modal>;
+}
+
+/** Full-screen review layer for Android, mounted above the tabs; the hardware back button closes it. */
+export function ReviewLayer({ scan, onClose }: { scan: Scan; onClose: () => void }) {
+  useEffect(() => { const sub = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true; }); return () => sub.remove(); }, [onClose]);
+  return <Reveal distance={40} style={[StyleSheet.absoluteFill, { zIndex: 20, elevation: 20 }]}><ReviewBody scan={scan} onClose={onClose} /></Reveal>;
+}
+
+function ReviewBody({ scan, onClose }: { scan: Scan; onClose: () => void }) {
   const { request, refresh, frame } = useApp();
   const { toast } = useFeedback();
   const insets = useSafeAreaInsets();
@@ -90,7 +108,7 @@ export function MapReview({ scan, visible, onClose }: { scan: Scan; visible: boo
   };
   const clearCount = scan.observations.filter(o => isClearSighting(o) && !picked[o.id]).length;
   const hasFrames = scan.observations.some(o => o.sightings.some(s => s.frame));
-  return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={onClose}>
+  return <>
     <View style={[styles.modal, { paddingTop: Platform.OS === 'ios' ? 8 : insets.top }]}>
       <View style={styles.modalHeader}>
         <View style={{ flex: 1 }}>
@@ -178,7 +196,7 @@ export function MapReview({ scan, visible, onClose }: { scan: Scan; visible: boo
     </View>
     <EditSighting scan={scan} observation={editing} edit={editing ? edits[editing.id] : undefined} onClose={() => setEditing(null)}
       onSave={(o, edit) => { setEdits(current => ({ ...current, [o.id]: edit })); setPicked(current => ({ ...current, [o.id]: true })); setEditing(null); haptic.success(); }} />
-  </Modal>;
+  </>;
 }
 
 function EditSighting({ scan, observation, edit, onClose, onSave }: { scan: Scan; observation: Observation | null; edit?: Edit; onClose: () => void; onSave: (o: Observation, edit: Edit) => void }) {

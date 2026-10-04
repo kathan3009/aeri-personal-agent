@@ -17,7 +17,7 @@ const price = (v?: Candidate['verification']) => v?.priceCents != null ? `$${(v.
 const time = (iso?: string) => iso ? new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
 function evidence(candidate: Candidate) {
   const v = candidate.verification;
-  if (!v) return 'Found by search. Price, stock and size not checked at the store.';
+  if (!v) return candidate.source === 'fixture' ? 'Sample listing. Price and stock not checked.' : 'Found by search. Price, stock and size not checked at the store.';
   if (v.method === 'fixture') return `Sample price ${price(v) ?? ''}`.trim();
   if (v.status === 'verified') return `${price(v)} at ${time(v.checkedAt)}${v.availability === 'in_stock' ? ', in stock' : v.availability === 'out_of_stock' ? ', out of stock' : ', stock not shown'}${v.storeLocation ? ` · ${v.storeLocation}` : ''}`;
   return v.note ?? 'The store page could not be read';

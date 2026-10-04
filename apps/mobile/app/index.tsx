@@ -6,6 +6,7 @@ import { CircleAlert, House, ListChecks, LogOut, RotateCw, Sparkles } from 'luci
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AgentTab } from '../components/AgentTab';
 import { MemoryTab } from '../components/MemoryTab';
+import { ReviewLayer } from '../components/MapReview';
 import { TasksTab } from '../components/TasksTab';
 import { Bloom, introDelay, LaunchVeil, Reveal, SkyLight, Wordmark } from '../components/motion';
 import { Aura, Button, Dot, Field, Glass, Group, Row, Sheet, useReducedMotion, type Icon } from '../components/ui';
@@ -146,11 +147,12 @@ export default function Root() {
 }
 
 function Home() {
-  const { settings, state, loading } = useApp();
+  const { settings, state, loading, refresh } = useApp();
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('agent');
   const [visited, setVisited] = useState<Set<Tab>>(() => new Set(['agent']));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [reviewing, setReviewing] = useState<string | null>(null);
   const [keyboard, setKeyboard] = useState(false);
   useEffect(() => {
     const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboard(true));
@@ -161,9 +163,9 @@ function Home() {
   const bottomGap = Math.max(insets.bottom, 14);
   const bottomInset = 64 + bottomGap + 10;
   const nav = useMemo(() => ({
-    go: (next: Tab) => { setVisited(seen => new Set(seen).add(next)); setTab(next); },
-    openSettings: () => setSettingsOpen(true), bottomInset, keyboard,
-  }), [bottomInset, keyboard]);
+    go: (next: Tab) => { setVisited(seen => new Set(seen).add(next)); setTab(next); void refresh(); },
+    openSettings: () => setSettingsOpen(true), openReview: setReviewing, bottomInset, keyboard,
+  }), [bottomInset, keyboard, refresh]);
   if (loading) return <View style={styles.root} />;
   if (!settings) return <ConnectScreen />;
   if (!state) return <View style={styles.root}><Sky /><Unreachable /><SettingsSheet visible={settingsOpen} onClose={() => setSettingsOpen(false)} /></View>;
@@ -192,6 +194,7 @@ function Home() {
         </Glass>
       </Reveal>}
     </KeyboardAvoidingView>
+    {reviewing && state.scans.find(s => s.id === reviewing && s.status === 'needs_review') && <ReviewLayer scan={state.scans.find(s => s.id === reviewing)!} onClose={() => setReviewing(null)} />}
     <SettingsSheet visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
   </NavContext.Provider>;
 }
