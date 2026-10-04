@@ -2,6 +2,7 @@ import { Children, Fragment, isValidElement, useEffect, useRef, useState, type C
 import { AccessibilityInfo, ActivityIndicator, Animated, Easing, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View, type StyleProp, type TextInputProps, type ViewStyle } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from 'expo-glass-effect';
+import { BlurView } from 'expo-blur';
 import { Check, ChevronRight, Minus, Plus } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { haptic } from '../lib/haptics';
@@ -98,13 +99,24 @@ export function HoldButton({ label, holdingLabel = 'Keep holding', doneLabel = '
     accessibilityState={{ disabled: !!disabled, busy: phase === 'done' }} accessibilityActions={[{ name: 'activate' }]} onAccessibilityAction={event => { if (event.nativeEvent.actionName === 'activate' && phaseRef.current === 'idle') { progress.setValue(1); void confirm(); } }}
     style={[styles.button, styles.hold, disabled && { opacity: 0.4 }, phase === 'holding' && { transform: [{ scale: 0.985 }] }, style]}>
     <Animated.View style={[styles.holdFill, { width: progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }]} />
-    {phase === 'done' ? <><Check size={18} color={c.white} strokeWidth={2.4} /><Text style={styles.buttonText}>{doneLabel}</Text></>
+    {phase === 'done' ? <><PopIn><Check size={18} color={c.white} strokeWidth={2.4} /></PopIn><Text style={styles.buttonText}>{doneLabel}</Text></>
       : <Text style={styles.buttonText}>{phase === 'holding' ? holdingLabel : label}</Text>}
   </Pressable>;
 }
 
+/** Liquid Glass on iOS 26+, the system chrome material on earlier iPhones, and an opaque surface elsewhere. */
+function PopIn({ children }: { children: ReactNode }) {
+  const scale = useRef(new Animated.Value(0.3)).current;
+  useEffect(() => { Animated.spring(scale, { toValue: 1, damping: 8, stiffness: 280, mass: 0.6, useNativeDriver: nativeDriver }).start(); }, [scale]);
+  return <Animated.View style={{ transform: [{ scale }] }}>{children}</Animated.View>;
+}
+
 export function Glass({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
   if (liquidGlass) return <GlassView glassEffectStyle="regular" tintColor="rgba(235,245,252,0.5)" style={style}>{children}</GlassView>;
+  if (Platform.OS === 'ios') return <View style={[lift, style, { overflow: 'visible' }]}>
+    <BlurView intensity={80} tint="systemChromeMaterialLight" style={[StyleSheet.absoluteFill, styles.blur, { borderRadius: StyleSheet.flatten(style)?.borderRadius ?? 0 }]} />
+    {children}
+  </View>;
   return <View style={[styles.glassFallback, lift, style]}>{children}</View>;
 }
 
@@ -201,6 +213,7 @@ const styles = StyleSheet.create({
   hold: { backgroundColor: c.accent, overflow: 'hidden' },
   holdFill: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#0E4F80' },
   glassFallback: { backgroundColor: 'rgba(255,255,255,0.96)', borderWidth: StyleSheet.hairlineWidth, borderColor: c.hairline },
+  blur: { overflow: 'hidden', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.7)' },
   group: { backgroundColor: c.surface, borderRadius: radius.group, overflow: 'hidden' },
   separator: { height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(15,43,64,0.12)' },
   row: { minHeight: 52, paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },

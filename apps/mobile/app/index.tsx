@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ActivityIndicator, Animated, Keyboard, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { SymbolView, type SFSymbol } from 'expo-symbols';
 import { CircleAlert, House, ListChecks, LogOut, Phone, RotateCw, Sparkles } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AgentTab } from '../components/AgentTab';
 import { MemoryTab } from '../components/MemoryTab';
 import { TasksTab } from '../components/TasksTab';
-import { Aura, Button, Dot, Field, Glass, Group, Row, Sheet, type Icon } from '../components/ui';
+import { Bloom, introDelay, LaunchVeil, Reveal, SkyLight, Wordmark } from '../components/motion';
+import { Aura, Button, Dot, Field, Glass, Group, Row, Sheet, useReducedMotion, type Icon } from '../components/ui';
 import { useApp } from '../lib/api';
 import { haptic } from '../lib/haptics';
 import { NavContext } from '../lib/nav';
@@ -17,7 +19,10 @@ const preview = Platform.OS === 'web';
 
 function Sky() {
   const colors = useMemo(() => skyFor(), []);
-  return <LinearGradient pointerEvents="none" colors={colors} locations={[0, 0.45, 1]} style={styles.sky} />;
+  return <>
+    <LinearGradient pointerEvents="none" colors={colors} locations={[0, 0.45, 1]} style={styles.sky} />
+    <SkyLight />
+  </>;
 }
 
 function ConnectScreen() {
@@ -36,18 +41,18 @@ function ConnectScreen() {
     <Sky />
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.connect, { paddingTop: insets.top + 56, paddingBottom: insets.bottom + 24 }]}>
-        <Aura size={64} mode={busy ? 'thinking' : 'idle'} />
-        <Text style={styles.connectTitle} accessibilityRole="header">Aeri</Text>
-        <Text style={[t.body, { color: c.ink2, marginTop: 8 }]}>A quiet helper for your home. It remembers what you have, plans what you need, and shops only with your OK.</Text>
-        <Group style={{ marginTop: 36 }}>
+        <Bloom size={64} delay={140} mode={busy ? 'thinking' : 'idle'} />
+        <View style={{ marginTop: 26 }}><Wordmark text="Aeri" delay={420} style={styles.connectTitle} /></View>
+        <Reveal delay={760}><Text style={[t.body, { color: c.ink2, marginTop: 8 }]}>A quiet helper for your home. It remembers what you have, plans what you need, and shops only with your OK.</Text></Reveal>
+        <Reveal delay={900}><Group style={{ marginTop: 36 }}>
           <Field label="Server address" value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" textContentType="URL" />
           <Field label="Access code" value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} secureTextEntry placeholder="From your .env file" returnKeyType="go" onSubmitEditing={() => void submit()} />
-        </Group>
+        </Group></Reveal>
         {problem && <View style={styles.problem} accessibilityLiveRegion="polite"><CircleAlert size={16} color={c.ember} strokeWidth={2} /><Text style={[t.footnote, { color: c.ember, flex: 1 }]}>{problem}</Text></View>}
-        <Button label="Connect" onPress={() => void submit()} loading={busy} disabled={!token.trim()} style={{ marginTop: 22 }} />
-        <Text style={[t.footnote, styles.connectFoot]}>{preview
+        <Reveal delay={1000}><Button label="Connect" onPress={() => void submit()} loading={busy} disabled={!token.trim()} style={{ marginTop: 22 }} /></Reveal>
+        <Reveal delay={1150} style={styles.connectFootWrap}><Text style={[t.footnote, styles.connectFoot]}>{preview
           ? 'Development preview. Your code is kept only for this browser session.'
-          : 'Both are in the .env file on the computer running Aeri. The code stays in this phone’s secure storage.'}</Text>
+          : 'Both are in the .env file on the computer running Aeri. The code stays in this phone’s secure storage.'}</Text></Reveal>
       </ScrollView>
     </KeyboardAvoidingView>
   </View>;
@@ -99,13 +104,50 @@ function Unreachable() {
   </View>;
 }
 
-const tabs: Array<{ key: Tab; label: string; icon: Icon }> = [
-  { key: 'agent', label: 'Agent', icon: Sparkles },
-  { key: 'memory', label: 'Memory', icon: House },
-  { key: 'tasks', label: 'Tasks', icon: ListChecks },
+const tabs: Array<{ key: Tab; label: string; icon: Icon; symbol: SFSymbol; activeSymbol: SFSymbol }> = [
+  { key: 'agent', label: 'Agent', icon: Sparkles, symbol: 'sparkles', activeSymbol: 'sparkles' },
+  { key: 'memory', label: 'Memory', icon: House, symbol: 'house', activeSymbol: 'house.fill' },
+  { key: 'tasks', label: 'Tasks', icon: ListChecks, symbol: 'checklist', activeSymbol: 'checklist' },
 ];
 
-export default function Home() {
+/** SF Symbols on iPhone (with the system bounce on selection); matching line icons elsewhere. */
+function TabIcon({ tab, active }: { tab: (typeof tabs)[number]; active: boolean }) {
+  const [taps, setTaps] = useState(0);
+  const was = useRef(active);
+  useEffect(() => { if (active && !was.current) setTaps(n => n + 1); was.current = active; }, [active]);
+  const color = active ? c.accent : c.ink2;
+  if (Platform.OS === 'ios') return <SymbolView key={taps} name={active ? tab.activeSymbol : tab.symbol} size={23} tintColor={color} weight={active ? 'semibold' : 'regular'}
+    animationSpec={taps ? { effect: { type: 'bounce', direction: 'up' } } : undefined} fallback={<tab.icon size={22} color={color} />} />;
+  const TabGlyph = tab.icon;
+  return <TabGlyph size={22} color={color} strokeWidth={active ? 2.1 : 1.8} />;
+}
+
+/** Cross-fades a tab's content in when it becomes the selected tab. */
+function TabScreen({ active, children }: { active: boolean; children: ReactNode }) {
+  const reduced = useReducedMotion();
+  const enter = useRef(new Animated.Value(1)).current;
+  const was = useRef(active);
+  useEffect(() => {
+    if (active && !was.current && !reduced) {
+      enter.setValue(0);
+      Animated.spring(enter, { toValue: 1, damping: 20, stiffness: 220, useNativeDriver: Platform.OS !== 'web' }).start();
+    }
+    was.current = active;
+  }, [active, enter, reduced]);
+  return <Animated.View style={[styles.screen, !active && styles.hidden, { opacity: enter, transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }] }]}
+    accessibilityElementsHidden={!active} importantForAccessibility={active ? 'auto' : 'no-hide-descendants'}>{children}</Animated.View>;
+}
+
+export default function Root() {
+  const { settings, state, loading, error } = useApp();
+  const ready = !loading && (!settings || !!state || !!error);
+  return <View style={styles.root}>
+    <Home />
+    <LaunchVeil ready={ready} brief={!loading && !settings} />
+  </View>;
+}
+
+function Home() {
   const { settings, state, loading } = useApp();
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('agent');
@@ -124,24 +166,25 @@ export default function Home() {
     go: (next: Tab) => { setVisited(seen => new Set(seen).add(next)); setTab(next); },
     openSettings: () => setSettingsOpen(true), bottomInset, keyboard,
   }), [bottomInset, keyboard]);
-  if (loading) return <View style={[styles.root, styles.center]}><ActivityIndicator color={c.accent} /></View>;
+  if (loading) return <View style={styles.root} />;
   if (!settings) return <ConnectScreen />;
   if (!state) return <View style={styles.root}><Sky /><Unreachable /><SettingsSheet visible={settingsOpen} onClose={() => setSettingsOpen(false)} /></View>;
   return <NavContext.Provider value={nav}>
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.root}>
       <Sky />
-      {tabs.map(({ key }) => visited.has(key) && <View key={key} style={[styles.screen, tab !== key && styles.hidden]} accessibilityElementsHidden={tab !== key} importantForAccessibility={tab === key ? 'auto' : 'no-hide-descendants'}>
+      {tabs.map(({ key }) => visited.has(key) && <TabScreen key={key} active={tab === key}>
         {key === 'agent' ? <AgentTab /> : key === 'memory' ? <MemoryTab /> : <TasksTab />}
-      </View>)}
-      {!keyboard && <View pointerEvents="box-none" style={[styles.tabDock, { bottom: bottomGap }]}>
+      </TabScreen>)}
+      {!keyboard && <Reveal delay={introDelay(260)} distance={30} pointerEvents="box-none" style={[styles.tabDock, { bottom: bottomGap }]}>
         <Glass style={styles.tabBar}>
           <View style={styles.tabRow} accessibilityRole="tablist">
-            {tabs.map(({ key, label, icon: TabIcon }) => {
+            {tabs.map(item => {
+              const { key, label } = item;
               const active = tab === key;
               return <Pressable key={key} onPress={() => { if (!active) haptic.tap(); nav.go(key); }} style={[styles.tabItem, active && styles.tabActive]}
                 accessibilityRole="tab" accessibilityState={{ selected: active }} accessibilityLabel={attention.has(key) ? `${label}, needs your attention` : label}>
                 <View>
-                  <TabIcon size={22} color={active ? c.accent : c.ink2} strokeWidth={active ? 2.1 : 1.8} />
+                  <TabIcon tab={item} active={active} />
                   {attention.has(key) && <View style={styles.badge} />}
                 </View>
                 <Text style={[styles.tabLabel, active && { color: c.accent }]}>{label}</Text>
@@ -149,7 +192,7 @@ export default function Home() {
             })}
           </View>
         </Glass>
-      </View>}
+      </Reveal>}
     </KeyboardAvoidingView>
     <SettingsSheet visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
   </NavContext.Provider>;
@@ -162,9 +205,10 @@ const styles = StyleSheet.create({
   screen: { flex: 1 },
   hidden: { display: 'none' },
   connect: { paddingHorizontal: 24, flexGrow: 1 },
-  connectTitle: { fontSize: 40, lineHeight: 46, fontWeight: '700', letterSpacing: -1, color: c.ink, marginTop: 26 },
+  connectTitle: { fontSize: 40, lineHeight: 46, fontWeight: '700', letterSpacing: -1, color: c.ink },
+  connectFootWrap: { marginTop: 'auto' },
   problem: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14, paddingHorizontal: 4 },
-  connectFoot: { textAlign: 'center', marginTop: 'auto', paddingTop: 28, paddingHorizontal: 12, color: c.ink3 },
+  connectFoot: { textAlign: 'center', paddingTop: 28, paddingHorizontal: 12, color: c.ink3 },
   sheetGroup: { backgroundColor: c.canvas },
   sheetLabel: { marginTop: 22, marginBottom: 8, marginLeft: 4 },
   tabDock: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },

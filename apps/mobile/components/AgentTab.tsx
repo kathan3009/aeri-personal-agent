@@ -12,7 +12,11 @@ import { useNav } from '../lib/nav';
 import { pendingFor } from '../lib/pending';
 import { c, greetingFor, host, lift, radius, t } from '../lib/theme';
 import { OfflineNotice, SettingsButton } from './Header';
+import { introDelay, Pop, Reveal, RevealWords, Shimmer } from './motion';
 import { Aura, Button, Dot, Field, Glass, Group, noWebOutline, Row, Sheet } from './ui';
+
+// Messages created after this point animate in; restored history appears still.
+const openedAt = Date.now();
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Work = null | 'scan' | 'voice';
@@ -36,11 +40,19 @@ function UserText({ text }: { text: string }) {
 function Message() {
   const role = useAuiState(s => s.message.role);
   const running = useAuiState(s => s.message.status?.type === 'running');
-  if (role === 'user') return <MessagePrimitive.Root style={styles.userBubble}>
-    <MessagePrimitive.Content renderText={({ part }) => <UserText text={part.text} />} />
-  </MessagePrimitive.Root>;
+  const fresh = useAuiState(s => s.message.createdAt.getTime() > openedAt);
+  const body = role === 'user'
+    ? <MessagePrimitive.Root style={styles.userBubble}>
+      <MessagePrimitive.Content renderText={({ part }) => <UserText text={part.text} />} />
+    </MessagePrimitive.Root>
+    : <AssistantMessage running={running} />;
+  if (role === 'user') return fresh ? <Reveal from="scale" style={styles.userWrap}>{body}</Reveal> : <View style={styles.userWrap}>{body}</View>;
+  return fresh ? <Reveal distance={12}>{body}</Reveal> : body;
+}
+
+function AssistantMessage({ running }: { running: boolean }) {
   return <MessagePrimitive.Root style={styles.assistant}>
-    {running && <Text style={[t.callout, { color: c.ink3 }]}>Thinking…</Text>}
+    {running && <Shimmer style={[t.callout, { color: c.ink3 }]}>Thinking…</Shimmer>}
     <MessagePrimitive.Content renderText={({ part }) => part.text ? <Text style={styles.assistantText} selectable>{part.text}</Text> : <View />} />
     <ErrorPrimitive.Root style={styles.errorBox}>
       <CircleAlert size={17} color={c.ember} strokeWidth={2} style={{ marginTop: 1 }} />
@@ -54,13 +66,14 @@ function Message() {
 }
 
 function Welcome({ onRecipe, onKitchen, onTell }: { onRecipe: () => void; onKitchen: () => void; onTell: () => void }) {
+  const start = useRef(introDelay()).current;
   return <View style={styles.welcome}>
-    <Text style={t.largeTitle} accessibilityRole="header">{greetingFor()}</Text>
-    <Text style={[t.title3, { color: c.ink2, fontWeight: '400', marginTop: 4 }]}>What can I take care of?</Text>
+    <RevealWords text={greetingFor()} style={t.largeTitle} delay={start} />
+    <Reveal delay={start + 220}><Text style={[t.title3, { color: c.ink2, fontWeight: '400', marginTop: 4 }]}>What can I take care of?</Text></Reveal>
     <Group style={{ marginTop: 28 }} inset={62}>
-      <Row title="Shop for a recipe video" subtitle="Paste a YouTube link. I'll list only what you're missing." onPress={onRecipe} chevron left={<View style={styles.rowIcon}><Clapperboard size={19} color={c.accent} strokeWidth={1.9} /></View>} />
-      <Row title="Show me your kitchen" subtitle="Record a short video. You confirm what I see." onPress={onKitchen} chevron left={<View style={styles.rowIcon}><Video size={19} color={c.accent} strokeWidth={1.9} /></View>} />
-      <Row title="Tell me what you have" subtitle={'“I have 6 eggs” or “my shirt size is M”'} onPress={onTell} chevron left={<View style={styles.rowIcon}><PenLine size={19} color={c.accent} strokeWidth={1.9} /></View>} />
+      <Reveal delay={start + 380}><Row title="Shop for a recipe video" subtitle="Paste a YouTube link. I'll list only what you're missing." onPress={onRecipe} chevron left={<View style={styles.rowIcon}><Clapperboard size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
+      <Reveal delay={start + 460}><Row title="Show me your kitchen" subtitle="Record a short video. You confirm what I see." onPress={onKitchen} chevron left={<View style={styles.rowIcon}><Video size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
+      <Reveal delay={start + 540}><Row title="Tell me what you have" subtitle={'“I have 6 eggs” or “my shirt size is M”'} onPress={onTell} chevron left={<View style={styles.rowIcon}><PenLine size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
     </Group>
   </View>;
 }
@@ -72,7 +85,7 @@ function Dock() {
   if (!pending.length || keyboard) return null;
   const [first] = pending;
   const quiet = first.title.startsWith('Waiting');
-  return <Pressable onPress={() => { haptic.tap(); go(first.tab); }} style={({ pressed }) => [styles.dockWrap, pressed && { transform: [{ scale: 0.985 }] }]}
+  return <Reveal key={first.key + first.title} distance={22}><Pressable onPress={() => { haptic.tap(); go(first.tab); }} style={({ pressed }) => [styles.dockWrap, pressed && { transform: [{ scale: 0.985 }] }]}
     accessibilityRole="button" accessibilityLabel={`${first.title}. ${first.detail}.${pending.length > 1 ? ` ${pending.length - 1} more waiting.` : ''}`}>
     <Glass style={styles.dock}>
       <Dot color={quiet ? c.ink3 : c.sunrise} size={9} />
@@ -83,7 +96,7 @@ function Dock() {
       {pending.length > 1 && <Text style={[t.number, styles.more]}>+{pending.length - 1}</Text>}
       <ChevronRight size={18} color={c.ink3} strokeWidth={2} />
     </Glass>
-  </Pressable>;
+  </Pressable></Reveal>;
 }
 
 function Conversation({ work, recording, linkOpen, setLinkOpen, onAttach, onScan, onVoice }: { work: Work; recording: boolean; linkOpen: boolean; setLinkOpen: (open: boolean) => void; onAttach: () => void; onScan: () => void; onVoice: () => void }) {
@@ -128,7 +141,7 @@ function Conversation({ work, recording, linkOpen, setLinkOpen, onAttach, onScan
           accessibilityRole="button" accessibilityLabel={recording ? 'Stop and send voice note' : 'Record a voice note'}>
           {recording ? <Square size={14} color={c.white} fill={c.white} /> : <Mic size={19} color={c.ink} strokeWidth={1.9} />}
         </Pressable>
-          : <ComposerPrimitive.Send style={[styles.trailing, styles.send]} accessibilityLabel="Send"><ArrowUp size={19} color={c.white} strokeWidth={2.4} /></ComposerPrimitive.Send>}
+          : <Pop on={!empty} initial><ComposerPrimitive.Send style={[styles.trailing, styles.send]} accessibilityLabel="Send"><ArrowUp size={19} color={c.white} strokeWidth={2.4} /></ComposerPrimitive.Send></Pop>}
       </ComposerPrimitive.Root>
     </View>
     <Sheet visible={linkOpen} onClose={() => setLinkOpen(false)} title="Shop for a recipe video" message="Paste a public YouTube link. I'll compare the recipe with your kitchen and list only what's missing. Nothing is bought without your OK.">
@@ -225,7 +238,8 @@ const styles = StyleSheet.create({
   messages: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 16, flexGrow: 1 },
   welcome: { paddingTop: 36, paddingBottom: 12 },
   rowIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.tint, alignItems: 'center', justifyContent: 'center' },
-  userBubble: { alignSelf: 'flex-end', maxWidth: '82%', backgroundColor: c.surface, borderRadius: 20, borderBottomRightRadius: 6, paddingHorizontal: 15, paddingVertical: 10, marginTop: 18 },
+  userWrap: { alignSelf: 'flex-end', maxWidth: '82%' },
+  userBubble: { backgroundColor: c.surface, borderRadius: 20, borderBottomRightRadius: 6, paddingHorizontal: 15, paddingVertical: 10, marginTop: 18 },
   userText: { ...t.callout, color: c.ink },
   linkChip: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 2 },
   linkIcon: { width: 32, height: 32, borderRadius: 9, backgroundColor: c.tint, alignItems: 'center', justifyContent: 'center' },

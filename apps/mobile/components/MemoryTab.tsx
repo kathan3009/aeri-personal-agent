@@ -8,6 +8,7 @@ import { haptic } from '../lib/haptics';
 import { useNav } from '../lib/nav';
 import { c, quantity, radius, t, titleCase } from '../lib/theme';
 import { LargeHeader } from './Header';
+import { Pop, Reveal } from './motion';
 import { Button, Dot, Field, Group, Row, SectionHeader, Sheet, Tag } from './ui';
 
 const certainty = (confidence: number) => confidence >= 0.85 ? 'Clearly seen' : confidence >= 0.6 ? 'Probably' : 'Not sure';
@@ -37,7 +38,7 @@ function Review({ scan }: { scan: Scan }) {
     } catch (error) { toast((error as Error).message, 'error'); }
     finally { setSaving(false); }
   };
-  return <View style={styles.review}>
+  return <Reveal from="scale" style={styles.review}>
     <View style={styles.reviewTop}>
       <Dot size={9} />
       <Text style={[t.headline, { flex: 1 }]} accessibilityRole="header">Check what I saw</Text>
@@ -51,7 +52,7 @@ function Review({ scan }: { scan: Scan }) {
       const on = !!picked[item.id];
       return <Pressable key={item.id} onPress={() => toggle(item)} style={({ pressed }) => [styles.observation, pressed && { backgroundColor: c.fill }]}
         accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={`${item.name}, ${item.quantity ? quantity(item.quantity) : 'amount unclear'}, ${certainty(item.confidence)}`}>
-        <View style={[styles.check, on && styles.checkOn]}>{on && <Check size={14} color={c.white} strokeWidth={3} />}</View>
+        <Pop on={on}><View style={[styles.check, on && styles.checkOn]}>{on && <Check size={14} color={c.white} strokeWidth={3} />}</View></Pop>
         <View style={{ flex: 1 }}>
           <Text style={t.callout}>{titleCase(item.name)}</Text>
           <Text style={t.footnote}>{certainty(item.confidence)}</Text>
@@ -60,7 +61,7 @@ function Review({ scan }: { scan: Scan }) {
       </Pressable>;
     })}
     <Button label={count ? `Remember ${count} ${count === 1 ? 'item' : 'items'}` : scan.observations.length ? 'None of these' : 'Dismiss'} tone={count ? 'primary' : 'secondary'} loading={saving} onPress={() => void save()} style={{ marginTop: 12 }} />
-  </View>;
+  </Reveal>;
 }
 
 function ItemSheet({ item, onClose }: { item: InventoryItem | 'new' | null; onClose: () => void }) {

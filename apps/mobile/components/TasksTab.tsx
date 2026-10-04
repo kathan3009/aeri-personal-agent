@@ -9,6 +9,7 @@ import { useNav } from '../lib/nav';
 import { isReceived } from '../lib/pending';
 import { c, host, quantity, radius, t, titleCase } from '../lib/theme';
 import { LargeHeader } from './Header';
+import { Fill, Reveal } from './motion';
 import { Aura, Button, Dot, Field, Group, HoldButton, Row, SectionHeader, Stepper, Tag } from './ui';
 
 type Suggestions = Array<{ itemId: string; results: Array<{ title: string; url: string }> }>;
@@ -19,7 +20,7 @@ const day = (iso?: string) => iso ? new Date(iso).toLocaleDateString(undefined, 
 
 function Progress({ step }: { step: number }) {
   return <View accessible accessibilityLabel={`Step ${step + 1} of ${steps.length}: ${steps[step]}`}>
-    <View style={styles.track}>{steps.map((_, index) => <View key={index} style={[styles.segment, index <= step && { backgroundColor: index === step ? c.accent : c.leaf }]} />)}</View>
+    <View style={styles.track}>{steps.map((_, index) => <Fill key={index} filled={index <= step} color={index === step ? c.accent : c.leaf} style={styles.segment} />)}</View>
     <View style={styles.trackLabel}>
       <Text style={[t.footnote, { color: step === 0 ? '#875810' : c.ink, fontWeight: '600' }]}>{steps[step]}</Text>
       <Text style={[t.number, t.footnote, { fontWeight: '500' }]}>{step + 1} of {steps.length}</Text>
@@ -92,7 +93,7 @@ function CartCard({ cart }: { cart: Cart }) {
         {draft && <Pressable onPress={() => { haptic.tap(); void act(`items/${item.id}`); }} disabled={!!busy} hitSlop={10} style={styles.remove} accessibilityRole="button" accessibilityLabel={`Remove ${item.name} from the list`}><X size={14} color={c.ink2} strokeWidth={2.4} /></Pressable>}
       </View>} />)}
   </Group>;
-  return <View style={styles.card}>
+  return <Reveal style={styles.card}>
     <Progress step={step} />
     <View style={styles.titleRow}>
       <Text style={[t.title2, { flex: 1 }]} accessibilityRole="header">{recipe?.title ?? 'Shopping list'}</Text>
@@ -143,7 +144,7 @@ function CartCard({ cart }: { cart: Cart }) {
       <Text style={[t.footnote, { marginBottom: 6, marginLeft: 4 }]}>Product links from the web. Prices and stock aren't checked.</Text>
       <Group style={styles.inner}>{suggestions.flatMap(entry => entry.results.slice(0, 1).map(result => <Row key={entry.itemId} title={result.title} subtitle={host(result.url)} onPress={() => void Linking.openURL(result.url)} right={<ExternalLink size={16} color={c.ink3} />} />))}</Group>
     </View>}
-  </View>;
+  </Reveal>;
 }
 
 const taskStatus = { running: [c.accent, 'Working on it'], needs_review: [c.sunrise, 'Waiting for you'], done: [c.leaf, 'Done'], failed: [c.ember, 'Didn’t work'] } as const;
@@ -157,12 +158,12 @@ export function TasksTab() {
   const activity = (state?.tasks ?? []).filter(task => task.status === 'running' || task.status === 'failed' || (task.kind === 'receipt' && task.status === 'needs_review')).slice(0, 4);
   return <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + 24 }]} showsVerticalScrollIndicator={false} automaticallyAdjustKeyboardInsets keyboardShouldPersistTaps="handled">
     <LargeHeader title="Tasks" subtitle="Shopping lists wait here for your OK." />
-    {active.length === 0 && <View style={styles.empty}>
+    {active.length === 0 && <Reveal from="scale" style={styles.empty}>
       <Aura size={44} />
       <Text style={[t.headline, { marginTop: 16 }]}>No lists waiting</Text>
       <Text style={[t.subhead, { textAlign: 'center', marginTop: 4, maxWidth: 280 }]}>Share a recipe video with Aeri and it will list only what you're missing.</Text>
       <Button label="Go to Agent" tone="secondary" onPress={() => go('agent')} style={{ marginTop: 18, paddingHorizontal: 26 }} />
-    </View>}
+    </Reveal>}
     {active.map(cart => <CartCard key={cart.id} cart={cart} />)}
     {activity.length > 0 && <>
       <SectionHeader title="Activity" />
