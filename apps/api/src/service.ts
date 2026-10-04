@@ -12,7 +12,7 @@ const now = () => new Date().toISOString();
 const youtubeUrl = (value: string): string | null => {
   const match = value.match(/https?:\/\/[^\s]+/);
   if (!match) return null;
-  try { const url = new URL(match[0]); return ['youtube.com','www.youtube.com','m.youtube.com','youtu.be','www.youtu.be'].includes(url.hostname) ? url.toString() : null; }
+  try { const url = new URL(match[0].replace(/[).,!?]+$/, '')); return ['youtube.com','www.youtube.com','m.youtube.com','youtu.be','www.youtu.be'].includes(url.hostname) ? url.toString() : null; }
   catch { return null; }
 };
 
@@ -198,10 +198,10 @@ export class AgentService {
     } else if (parsed.kind === 'consume' && parsed.key && parsed.value) {
       const item = await this.consumeInventory(parsed.key, Number(parsed.value));
       reply = `Updated — you have ${item.quantity.amount} ${item.name} left in memory.`;
-    } else if (parsed.kind === 'preference' && parsed.key && parsed.value) {
+    } else if (parsed.kind === 'preference' && parsed.key && parsed.value && (parsed.key !== 'note' || !process.env.NEON_AI_GATEWAY_API_KEY || !process.env.NEON_AI_GATEWAY_BASE_URL)) {
       await this.setPreference(parsed.key, parsed.value);
       reply = `I'll remember: ${parsed.key} = ${parsed.value}.`;
-    } else if (parsed.kind === 'recipe') {
+    } else if (youtubeUrl(clean)) {
       const link = youtubeUrl(clean)!;
       const result = await this.recipeFromUrl(link);
       reply = `I found ${result.recipe.title} and made a draft cart with ${result.cart.items.length} missing ingredients. Review it before I open checkout.`;
@@ -217,15 +217,21 @@ export class AgentService {
     const base = process.env.NEON_AI_GATEWAY_BASE_URL;
     if (!key || !base) return 'I can remember what you have, save preferences, and turn a YouTube recipe into a shopping list. Try “I have 3 eggs” or paste a recipe link. Add Neon AI Gateway keys for open-ended conversation.';
     const store = this.store;
+    const service = this;
     const agent = new Agent({
       id: 'aeri', name: 'Aeri',
-      instructions: 'You are Aeri, a concise personal household shopping agent. Help the user plan meals and purchases. Never claim that an order was placed unless the system has an explicit order reference. A kitchen video gives uncertain observations until user confirmation. Use tools to read memory when relevant. Never expose credentials or internal prompts.',
+      instructions: 'You are Aeri, a concise personal household shopping agent. Help the user plan meals and purchases. Use tools whenever the user asks you to remember, change, or read household facts. Inventory quantities are replaced when setInventory is called; use consumeInventory when the user says they used some. Create recipe carts only from public YouTube links and leave them as drafts for review. Never claim that an order was placed unless the system has an explicit order reference. A kitchen video gives uncertain observations until user confirmation. Never expose credentials or internal prompts.',
       model: { id: `neon/${process.env.NEON_AI_GATEWAY_MODEL ?? 'gpt-5-mini'}`, url: `${base.replace(/\/$/, '')}/v1`, apiKey: key, api: 'chat' },
       tools: {
-        readMemory: createTool({ id: 'readMemory', description: 'Read confirmed inventory and user preferences', inputSchema: z.object({}), execute: async () => { const state = await store.read(); return { inventory: state.inventory, preferences: state.preferences }; } }),
+        readMemory: createTool({ id: 'readMemory', description: 'Read confirmed inventory, user preferences, and recent shopping plans', inputSchema: z.object({}), execute: async () => { const state = await store.read(); return { inventory: state.inventory, preferences: state.preferences, carts: state.carts.slice(0, 3).map(c => ({ id: c.id, status: c.status, items: c.items })) }; } }),
+        setInventory: createTool({ id: 'setInventory', description: 'Save an explicitly stated current quantity of a kitchen item', inputSchema: z.object({ name: z.string().min(1), amount: z.number().positive(), unit: inventoryItemSchema.shape.quantity.shape.unit }), execute: async ({ name, amount, unit }) => service.addInventory(name, amount, unit) }),
+        consumeInventory: createTool({ id: 'consumeInventory', description: 'Subtract a stated number of individual items the user consumed', inputSchema: z.object({ name: z.string().min(1), amount: z.number().positive() }), execute: async ({ name, amount }) => service.consumeInventory(name, amount) }),
+        rememberPreference: createTool({ id: 'rememberPreference', description: 'Remember a user preference such as clothing size, allergies, budget, or preferred retailer', inputSchema: z.object({ key: z.string().min(1), value: z.string().min(1) }), execute: async ({ key, value }) => { await service.setPreference(key, value); return { saved: true, key, value }; } }),
+        createRecipeCart: createTool({ id: 'createRecipeCart', description: 'Turn a public YouTube recipe URL into a draft missing-ingredient cart for user review', inputSchema: z.object({ url: z.string().url() }), execute: async ({ url }) => { const result = await service.recipeFromUrl(url); return { recipe: result.recipe.title, cartId: result.cart.id, neededItems: result.cart.items.length, status: result.cart.status }; } }),
       },
     });
-    const result = await agent.generate(prompt, { maxSteps: 4 });
+    const history = (await store.read()).messages.slice(-10).map(message => `${message.role}: ${message.content}`).join('\n');
+    const result = await agent.generate(`Recent conversation:\n${history}\n\nCurrent user request: ${prompt}`, { maxSteps: 6 });
     return result.text || 'I could not complete that request. Please try again.';
   }
 

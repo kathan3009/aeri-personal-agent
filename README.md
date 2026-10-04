@@ -49,6 +49,10 @@ The user approves the exact draft items before the browser starts. Aeri never su
 
 `npm run typecheck` checks all packages. `npm test` covers quantity math, scan confirmation, API authentication, cart approval and persistence. `npx expo export --platform ios` in `apps/mobile` verifies the native JS bundle. A real phone build and sponsor-backed integration tests still need credentials and device access.
 
+For an installable Android demo, `apps/mobile/eas.json` includes an internal `preview` APK profile. Run `eas build --platform android --profile preview` from `apps/mobile` after connecting an Expo account. iOS internal distribution additionally needs Apple signing/provisioning.
+
 ## Security and privacy
 
 The API rejects all `/v1` calls without the access code; the phone stores that code in Expo SecureStore. The app never embeds provider keys. The local JSON store is for one private household; set Neon Postgres for hosted use. Vapi tools require both a configured webhook secret and exact paired caller number. AgentMail verifies Svix signatures. This is a hackathon MVP, not a multi-household service.
+
+The generated local setup uses HTTP only for same-Wi-Fi development. Use an HTTPS API URL for hosted builds and avoid sending the access code over untrusted networks.

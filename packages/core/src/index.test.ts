@@ -16,6 +16,10 @@ describe('shopping state', () => {
       { name: 'Milk', quantity: { amount: 500, unit: 'ml' } },
     ]);
   });
+  it('rounds up a partial count so a cart never buys a fraction of an item', () => {
+    const slightlyShort = [{ ...inventory[0], quantity: { amount: 2.7, unit: 'each' as const } }];
+    expect(missingIngredients(recipe, slightlyShort)[0].quantity).toEqual({ amount: 2, unit: 'each' });
+  });
   it('requires approval before checkout', () => {
     const cart = createCart(recipe, inventory, 'now', () => 'id');
     expect(cart.status).toBe('draft');

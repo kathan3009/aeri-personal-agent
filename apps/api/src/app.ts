@@ -80,7 +80,7 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
   app.post('/webhooks/vapi', async c => {
     const secret = process.env.VAPI_WEBHOOK_SECRET;
     if (!secret || !compareToken(secret, c.req.header('x-vapi-secret') ?? '')) return c.json({ error: 'Unauthorized' }, 401);
-    const body = await c.req.json() as { message?: { type?: string; customer?: { number?: string }; call?: { customer?: { number?: string } }; toolCallList?: Array<{ id: string; function?: { name?: string; arguments?: unknown } }> } };
+    const body = await c.req.json() as { message?: { type?: string; customer?: { number?: string }; call?: { customer?: { number?: string } }; toolCallList?: Array<{ id: string; name?: string; parameters?: unknown; function?: { name?: string; arguments?: unknown } }> } };
     if (body.message?.type !== 'tool-calls') return c.json({ ok: true });
     const caller = body.message.customer?.number ?? body.message.call?.customer?.number;
     const allowed = process.env.VAPI_ALLOWED_CALLER;
@@ -89,8 +89,9 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
     const results = [];
     for (const call of calls) {
       try {
-        const name = call.function?.name;
-        const args = typeof call.function?.arguments === 'string' ? JSON.parse(call.function.arguments) : call.function?.arguments;
+        const name = call.name ?? call.function?.name;
+        const rawArgs = call.parameters ?? call.function?.arguments;
+        const args = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
         let result: string;
         if (name === 'read_memory') {
           const state = await store.read(); result = JSON.stringify({ inventory: state.inventory, preferences: state.preferences, tasks: state.tasks.slice(0, 5) });
@@ -101,7 +102,7 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
           const { url, confirmed } = z.object({ url: z.string().url(), confirmed: z.literal(true) }).parse(args);
           const created = await service.recipeFromUrl(url); result = `Draft cart ${created.cart.id} created for ${created.recipe.title}. Review it in the app before checkout.`;
         } else result = `Unknown tool ${name}`;
-        results.push({ toolCallId: call.id, result });
+        results.push({ name, toolCallId: call.id, result });
       } catch (error) { results.push({ toolCallId: call.id, error: (error as Error).message }); }
     }
     return c.json({ results });
@@ -110,7 +111,7 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
     const secret = process.env.AGENTMAIL_WEBHOOK_SECRET;
     if (!secret) return c.json({ error: 'AgentMail webhook not configured' }, 503);
     const payload = await c.req.text();
-    let event: { event_id?: string; event_type?: string; message?: { message_id?: string; subject?: string; preview?: string; from?: string[]; sender?: string } };
+    let event: { event_id?: string; event_type?: string; message?: { message_id?: string; subject?: string; preview?: string; from?: string | string[]; from_?: string | string[]; sender?: string } };
     try {
       new Webhook(secret).verify(payload, {
         'svix-id': c.req.header('svix-id') ?? '',
@@ -126,7 +127,7 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
       const subject = event.message?.subject ?? 'New receipt or delivery email';
       const at = new Date().toISOString();
       state.tasks.unshift({ id: randomUUID(), kind: 'receipt', title: 'Review email evidence', status: 'needs_review', detail: subject, createdAt: at, updatedAt: at });
-      state.events.push({ id: randomUUID(), type: 'email.received', at, data: { eventId, messageId: event.message?.message_id, subject, preview: event.message?.preview, sender: event.message?.sender ?? event.message?.from } });
+      state.events.push({ id: randomUUID(), type: 'email.received', at, data: { eventId, messageId: event.message?.message_id, subject, preview: event.message?.preview, sender: event.message?.sender ?? event.message?.from_ ?? event.message?.from } });
     });
     return c.json({ ok: true });
   });

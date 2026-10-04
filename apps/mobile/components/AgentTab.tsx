@@ -41,6 +41,7 @@ function ChatThread({ onScan, onVoice, recording, busy }: { onScan: () => void; 
       <AuiIf condition={s => s.thread.isRunning}><View style={styles.thinking}><ActivityIndicator size="small" color={c.blue} /><Text style={styles.thinkingText}>Aeri is thinking</Text></View></AuiIf>
       <View style={styles.composerOuter}>
         <ComposerPrimitive.Root style={styles.composer}>
+          <AuiIf condition={s => !s.thread.isEmpty}><Pressable onPress={onScan} style={styles.composerCamera} accessibilityLabel="Scan kitchen"><Camera size={19} color={c.muted} strokeWidth={1.8} /></Pressable></AuiIf>
           <ComposerPrimitive.Input placeholder="Ask me anything..." placeholderTextColor="#8BA3B2" multiline style={styles.composerInput} />
           <ComposerPrimitive.Send style={styles.sendButton}><ArrowUp size={20} color={c.white} strokeWidth={2.2} /></ComposerPrimitive.Send>
         </ComposerPrimitive.Root>
@@ -72,6 +73,7 @@ export function AgentTab() {
   const processVideo = async (camera: boolean) => {
     try {
       setBusy(true);
+      if (camera && !(await ImagePicker.requestCameraPermissionsAsync()).granted) { Alert.alert('Camera access needed'); return; }
       const result = camera ? await ImagePicker.launchCameraAsync({ mediaTypes: ['videos'], videoMaxDuration: 40, videoQuality: 0 })
         : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'] });
       if (!result.canceled && result.assets[0]) {
@@ -97,6 +99,7 @@ export function AgentTab() {
           const latest = await request<{ state: { messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }> } }>('/v1/bootstrap');
           runtime.thread.reset(latest.state.messages.map(m => ({ id: m.id, role: m.role, content: m.content, createdAt: new Date(m.createdAt) })));
           await refresh();
+          await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
           Speech.speak(result.reply, { language: 'en-US', rate: .96 });
         }
       } catch (error) { Alert.alert('Voice note failed', (error as Error).message); }
@@ -133,6 +136,7 @@ const styles = StyleSheet.create({
   composerOuter: { flexDirection: 'row', alignItems: 'flex-end', gap: 9, paddingHorizontal: 16, paddingTop: 12 },
   composer: { flex: 1, minHeight: 54, maxHeight: 110, flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 25, paddingLeft: 18, paddingRight: 5, borderWidth: 1, borderColor: '#E2EDF3', shadowColor: '#88B6CA', shadowOpacity: .12, shadowRadius: 18, shadowOffset: { width: 0, height: 5 } },
   composerInput: { flex: 1, fontSize: 15, color: c.deep, maxHeight: 90, paddingVertical: 12 },
+  composerCamera: { width: 31, height: 42, alignItems: 'center', justifyContent: 'center' },
   sendButton: { width: 43, height: 43, borderRadius: 22, backgroundColor: c.blue, alignItems: 'center', justifyContent: 'center' },
   voiceButton: { width: 54, height: 54, borderRadius: 26, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2EDF3', alignItems: 'center', justifyContent: 'center' },
   composerHint: { textAlign: 'center', fontSize: 10, color: '#93AAB7', paddingTop: 8, paddingBottom: 11 },

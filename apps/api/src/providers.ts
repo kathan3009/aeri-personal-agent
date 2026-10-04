@@ -4,12 +4,16 @@ import { Agent } from '@mastra/core/agent';
 import { createTool } from '@mastra/core/tools';
 import { recipeSchema, observationSchema, type Recipe, type Observation } from '@personal-agent/core';
 import { z } from 'zod';
+import { setTimeout as delay } from 'node:timers/promises';
 import { demoObservations, demoRecipe } from './demo.js';
 
 const extractJson = (text: string): unknown => {
   const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
   return JSON.parse(clean);
 };
+
+const interactionText = (outputs: Array<{ type: string; text?: string }> | undefined): string =>
+  (outputs ?? []).filter(part => part.type === 'text').map(part => part.text ?? '').join(' ').trim();
 
 export function providerStatus() {
   return {
@@ -25,14 +29,14 @@ function gemini(): GoogleGenAI | null { return process.env.GEMINI_API_KEY ? new 
 export async function understandRecipe(url: string, id: string, now: string): Promise<Recipe> {
   const ai = gemini();
   if (!ai) return demoRecipe(id, now, url, 'Creamy tomato pasta · demo recipe');
-  const response = await ai.models.generateContent({
-    model: process.env.GEMINI_VIDEO_MODEL ?? 'gemini-2.5-flash',
-    contents: [{ role: 'user', parts: [
-      { fileData: { fileUri: url, mimeType: 'video/*' } },
-      { text: 'Extract the actual recipe shown in this video. Return ONLY JSON with title, servings, ingredients [{name,amount,unit,optional}], and instructions. Units allowed: each,g,kg,ml,l,oz,lb,cup,tbsp,tsp. If a quantity is unclear, use a reasonable estimate and mention the uncertainty in the ingredient name. Do not invent an unrelated recipe.' },
-    ] }],
+  const response = await ai.interactions.create({
+    model: process.env.GEMINI_VIDEO_MODEL ?? 'gemini-3.8-flash',
+    input: [
+      { type: 'video', uri: url },
+      { type: 'text', text: 'Extract the actual recipe shown in this video. Return ONLY JSON with title, servings, ingredients [{name,amount,unit,optional}], and instructions. Units allowed: each,g,kg,ml,l,oz,lb,cup,tbsp,tsp. If a quantity is unclear, use a reasonable estimate and mention the uncertainty in the ingredient name. Do not invent an unrelated recipe.' },
+    ], response_mime_type: 'application/json',
   });
-  const raw = z.object({ title: z.string(), servings: z.number(), ingredients: z.array(z.object({ name: z.string(), amount: z.number(), unit: z.enum(['each','g','kg','ml','l','oz','lb','cup','tbsp','tsp']), optional: z.boolean().optional() })), instructions: z.array(z.string()) }).parse(extractJson(response.text ?? ''));
+  const raw = z.object({ title: z.string(), servings: z.number(), ingredients: z.array(z.object({ name: z.string(), amount: z.number(), unit: z.enum(['each','g','kg','ml','l','oz','lb','cup','tbsp','tsp']), optional: z.boolean().optional() })), instructions: z.array(z.string()) }).parse(extractJson(interactionText(response.outputs)));
   return recipeSchema.parse({ id, createdAt: now, sourceUrl: url, source: 'gemini', title: raw.title, servings: raw.servings, ingredients: raw.ingredients.map(({ name, amount, unit, optional }) => ({ name, quantity: { amount, unit }, optional: optional ?? false })), instructions: raw.instructions });
 }
 
@@ -40,28 +44,56 @@ export async function understandKitchenVideo(data: Uint8Array, mimeType: string,
   const ai = gemini();
   if (!ai) return demoObservations(id);
   if (data.byteLength > 90_000_000) throw new Error('Video is too large. Please record a clip under 90 MB.');
-  const response = await ai.models.generateContent({
-    model: process.env.GEMINI_VIDEO_MODEL ?? 'gemini-2.5-flash',
-    contents: [{ role: 'user', parts: [
-      { inlineData: { data: Buffer.from(data).toString('base64'), mimeType } },
-      { text: 'Identify groceries visibly present in this kitchen video. Return ONLY JSON array [{name,amount,unit,confidence}]. Use allowed units each,g,kg,ml,l,oz,lb,cup,tbsp,tsp. Estimate quantity conservatively and confidence 0 to 1. Do not infer hidden items.' },
-    ] }],
-  });
-  const parsed = z.array(z.object({ name: z.string(), amount: z.number().positive().optional(), unit: z.enum(['each','g','kg','ml','l','oz','lb','cup','tbsp','tsp']).optional(), confidence: z.number().min(0).max(1) })).parse(extractJson(response.text ?? ''));
-  return parsed.map(item => observationSchema.parse({ id: id(), name: item.name, confidence: item.confidence, decision: 'pending', quantity: item.amount ? { amount: item.amount, unit: item.unit ?? 'each' } : undefined }));
+  const videoMime = mimeType === 'video/quicktime' ? 'video/mov' : mimeType;
+  if (!['video/mp4', 'video/mpeg', 'video/mpg', 'video/mov', 'video/avi', 'video/x-flv', 'video/webm', 'video/wmv', 'video/3gpp'].includes(videoMime)) throw new Error('Unsupported video format. Use MP4 or MOV.');
+  let fileName: string | undefined;
+  try {
+    let video: { type: 'video'; data?: string; uri?: string; mime_type: 'video/mp4' };
+    if (data.byteLength < 18_000_000) video = { type: 'video', data: Buffer.from(data).toString('base64'), mime_type: videoMime as 'video/mp4' };
+    else {
+      let file = await ai.files.upload({ file: new Blob([new Uint8Array(data)], { type: videoMime }), config: { mimeType: videoMime } });
+      fileName = file.name;
+      for (let attempt = 0; file.state === 'PROCESSING' && attempt < 30; attempt++) {
+        await delay(2000);
+        file = await ai.files.get({ name: fileName! });
+      }
+      if (file.state !== 'ACTIVE' || !file.uri) throw new Error('Gemini could not process the kitchen video');
+      video = { type: 'video', uri: file.uri, mime_type: videoMime as 'video/mp4' };
+    }
+    const response = await ai.interactions.create({
+      model: process.env.GEMINI_VIDEO_MODEL ?? 'gemini-3.8-flash',
+      input: [video, { type: 'text', text: 'Identify groceries visibly present in this kitchen video. Return ONLY JSON array [{name,amount,unit,confidence}]. Use allowed units each,g,kg,ml,l,oz,lb,cup,tbsp,tsp. Estimate quantity conservatively and confidence 0 to 1. Do not infer hidden items.' }],
+      response_mime_type: 'application/json',
+    });
+    const parsed = z.array(z.object({ name: z.string(), amount: z.number().positive().optional(), unit: z.enum(['each','g','kg','ml','l','oz','lb','cup','tbsp','tsp']).optional(), confidence: z.number().min(0).max(1) })).parse(extractJson(interactionText(response.outputs)));
+    return parsed.map(item => observationSchema.parse({ id: id(), name: item.name, confidence: item.confidence, decision: 'pending', quantity: item.amount ? { amount: item.amount, unit: item.unit ?? 'each' } : undefined }));
+  } finally {
+    if (fileName) await ai.files.delete({ name: fileName }).catch(() => undefined);
+  }
 }
 
 export async function transcribeAudio(data: Uint8Array, mimeType: string): Promise<string> {
   const ai = gemini();
   if (!ai) throw new Error('Voice transcription needs GEMINI_API_KEY. Text chat works now.');
-  const response = await ai.models.generateContent({
-    model: process.env.GEMINI_VIDEO_MODEL ?? 'gemini-2.5-flash',
-    contents: [{ role: 'user', parts: [
-      { inlineData: { data: Buffer.from(data).toString('base64'), mimeType } },
-      { text: 'Transcribe the user speech exactly. Return only the transcription.' },
-    ] }],
-  });
-  return (response.text ?? '').trim();
+  const audioMime = mimeType === 'audio/mp4' || mimeType === 'audio/x-m4a' ? 'audio/m4a' : mimeType;
+  if (!['audio/m4a', 'audio/mp3', 'audio/mpeg', 'audio/wav', 'audio/aac', 'audio/ogg', 'audio/flac'].includes(audioMime)) throw new Error('Unsupported voice format. Use M4A, MP3, or WAV.');
+  const uploaded = await ai.files.upload({ file: new Blob([new Uint8Array(data)], { type: audioMime }), config: { mimeType: audioMime } });
+  if (!uploaded.name) throw new Error('Gemini did not return an audio file reference');
+  try {
+    let file = uploaded;
+    for (let attempt = 0; file.state === 'PROCESSING' && attempt < 30; attempt++) {
+      await delay(2000);
+      file = await ai.files.get({ name: uploaded.name });
+    }
+    if (file.state !== 'ACTIVE' || !file.uri) throw new Error('Gemini could not process the voice note');
+    const response = await ai.interactions.create({
+      model: process.env.GEMINI_AUDIO_MODEL ?? 'gemini-3.5-transcribe',
+      input: [{ type: 'audio', uri: file.uri, mime_type: audioMime as 'audio/m4a' }],
+    });
+    const transcript = interactionText(response.outputs);
+    if (!transcript) throw new Error('No speech was detected in the voice note');
+    return transcript;
+  } finally { await ai.files.delete({ name: uploaded.name }).catch(() => undefined); }
 }
 
 export async function researchProducts(query: string): Promise<Array<{ title: string; url: string }>> {

@@ -96,7 +96,9 @@ export function missingIngredients(recipe: Recipe, inventory: InventoryItem[]): 
       .map(item => toBase(item.quantity)).filter(value => value.dimension === needed.dimension)
       .reduce((total, value) => total + value.amount, 0);
     const fraction = Math.max(0, (needed.amount - available) / needed.amount);
-    return { ...ingredient, quantity: { ...ingredient.quantity, amount: Math.round(ingredient.quantity.amount * fraction * 100) / 100 } };
+    const shortage = ingredient.quantity.amount * fraction;
+    const amount = ingredient.quantity.unit === 'each' ? Math.max(1, Math.ceil(shortage)) : Math.max(.01, Math.ceil(shortage * 100) / 100);
+    return { ...ingredient, quantity: { ...ingredient.quantity, amount } };
   });
 }
 

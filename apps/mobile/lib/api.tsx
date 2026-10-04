@@ -55,7 +55,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const disconnect = useCallback(async () => { await SecureStore.deleteItemAsync('aeri.settings'); setSettings(null); setState(null); setProviders(null); setPhoneNumber(null); }, []);
   const upload = useCallback(async <T,>(path: string, uri: string, kind: 'video' | 'audio', mimeType: string): Promise<T> => {
     const form = new FormData();
-    form.append(kind, { uri, name: `${kind}-${Date.now()}.${kind === 'video' ? 'mp4' : 'm4a'}`, type: mimeType } as unknown as Blob);
+    const extension = kind === 'audio' ? 'm4a' : mimeType === 'video/quicktime' ? 'mov' : 'mp4';
+    form.append(kind, { uri, name: `${kind}-${Date.now()}.${extension}`, type: mimeType } as unknown as Blob);
     return request<T>(path, { method: 'POST', body: form });
   }, [request]);
   const value = useMemo(() => ({ settings, state, providers, phoneNumber, loading, error, connect, disconnect, refresh, request, upload }), [settings, state, providers, phoneNumber, loading, error, connect, disconnect, refresh, request, upload]);
