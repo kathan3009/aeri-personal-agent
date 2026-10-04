@@ -1,6 +1,6 @@
 # Aeri build plan — retailer-independent personal shopping agent
 
-**Updated:** October 4, 2026. **Credit snapshot:** October 4, ~11:20 AM PDT. This is a plan, not a claim that the unbuilt steps work. Account balances can change; recheck them before activating a paid service. The repository stays private under `kathan3009`.
+**Updated:** October 4, 2026. **Credit snapshot:** Neon refreshed ~11:35 AM PDT; other providers checked ~11:20 AM PDT. This is a plan, not a claim that the unbuilt steps work. Account balances can change; recheck them before activating a paid service. The repository stays private under `kathan3009`.
 
 ## Product contract
 
@@ -10,7 +10,7 @@ The user can instead say “nearest,” “organic only,” “this brand,” �
 
 ## What exists today and what must change
 
-The Expo app has chat, voice capture, recipe-link entry, kitchen-video upload, Memory, Tasks, cart review, and a retailer handoff. The Hono API has a Mastra agent, local/Neon state, Exa product-link search, a Kernel browser adapter, and signed AgentMail receipt ingestion. The agent currently targets **one configured retailer URL (Instacart by default)**. Exa results are links, not verified stock or prices. The Kernel cart action has not been rehearsed against a signed-in store. Aeri does **not** place orders or charge a payment method. Video understanding and voice transcription need a separate Gemini key; without it the app correctly labels sample results. Neon AI Gateway credit is pending, so open-ended and browser-agent loops are not live-tested. These gaps are the implementation queue, not demo claims.
+The Expo app has chat, voice capture, recipe-link entry, kitchen-video upload, Memory, Tasks, cart review, and a retailer handoff. The Hono API has a Mastra agent, local/Neon state, Exa product-link search, a Kernel browser adapter, and signed AgentMail receipt ingestion. The agent currently targets **one configured retailer URL (Instacart by default)**. Exa results are links, not verified stock or prices. The Kernel cart action has not been rehearsed against a signed-in store. Aeri does **not** place orders or charge a payment method. Video understanding and voice transcription need a separate Gemini key; without it the app correctly labels sample results. Neon AI Gateway credit has posted, but its key/model connection and open-ended/browser-agent loops are not live-tested. These gaps are the implementation queue, not demo claims.
 
 ## End-to-end architecture
 
@@ -63,7 +63,7 @@ The current implementation has the upload, extraction, review, and confirmed inv
 
 ## Tools and credits: verified account snapshot
 
-Balances below come from the read-only [account audit](docs/ACCOUNT_STATUS.md), checked October 4 at ~11:20 AM PDT. A sponsor offer is not the same as posted credit. Provider keys stay in ignored local `.env` or deployment secrets.
+Balances below come from the read-only [account audit](docs/ACCOUNT_STATUS.md), checked October 4 at ~11:20 AM PDT for most providers and ~11:35 AM PDT for Neon. A sponsor offer is not the same as posted credit. Provider keys stay in ignored local `.env` or deployment secrets.
 
 | Tool | Aeri job | Current state / credit | Next use |
 | --- | --- | --- | --- |
@@ -71,7 +71,7 @@ Balances below come from the read-only [account audit](docs/ACCOUNT_STATUS.md), 
 | **assistant-ui React Native** | Conversation UI | Open-source package installed; **$750 side quest is a prize, not credit** | Keep chat coherent with shopping tasks and approvals |
 | **Mastra open source** | Planner/tool loop and bounded browser agent | Framework used locally; Mastra hosted account has **$0 posted**, Starter, auto top-up off; $25 code on stack has not appeared as account balance | Add typed shopping/merchant tools; hosted Mastra optional |
 | **Neon Postgres** | Durable household memory, offers, audit events, order state | **$500 main credit posted**, $0 charged; card attached; local database read confirmed | Move from one JSON blob to versioned tables; no additional deployment without card-charge control |
-| **Neon AI Gateway** | Model access for Mastra planning/tool calls | **$0 posted**; $500 sponsor request pending; separate from main Neon credit | Connect and test only after credit posts and card exposure is controlled |
+| **Neon AI Gateway** | Model access for Mastra planning/tool calls | **$500 posted October 4**, separate from $500 main Neon credit; card attached; key/model connection and app request unverified | Connect and test within a card-safe usage boundary; never assume the $1 email alert is a hard cap |
 | **Gemini direct API** | Real YouTube/video understanding and voice transcription | **No key configured; not a listed hackathon credit**; direct usage could bill separately | Use only after a funded/free-safe account is confirmed; keep honest sample/manual fallback meanwhile |
 | **Exa** | Multi-store product and merchant discovery | **$69.97 remaining**, Free tier, no card; key connected and basic search tested | Candidate generation; never treat results as verified prices/stock |
 | **Kernel** | Isolated retailer browsers, cart actions, live user takeover | **$55 free credit remaining**, no card; scoped key connected; only a temporary store open tested | Build 2–3 merchant adapters and rehearse real item/price/cart matching; delete sessions after use |
