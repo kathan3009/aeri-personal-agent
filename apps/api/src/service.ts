@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Agent } from '@mastra/core/agent';
+import { Mastra } from '@mastra/core/mastra';
 import { createTool } from '@mastra/core/tools';
 import { approveCart, confirmScan, createCart, inventoryItemSchema, normalizeName, scaleRecipe, type AppState, type Cart, type Recipe, type Scan } from '@personal-agent/core';
 import { z } from 'zod';
@@ -273,7 +274,9 @@ export class AgentService {
       },
     });
     const history = (await store.read()).messages.slice(-10).map(message => `${message.role}: ${message.content}`).join('\n');
-    const result = await withProvider('Neon AI Gateway', () => agent.generate(`Recent conversation:\n${history}\n\nCurrent user request: ${prompt}`, { maxSteps: 6 }));
+    // Mastra's default logger includes upstream response bodies, which can echo credentials.
+    const mastra = new Mastra({ agents: { aeri: agent }, logger: false, workers: false });
+    const result = await withProvider('Neon AI Gateway', () => mastra.getAgent('aeri').generate(`Recent conversation:\n${history}\n\nCurrent user request: ${prompt}`, { maxSteps: 6 }));
     return result.text || 'I could not complete that request. Please try again.';
   }
 

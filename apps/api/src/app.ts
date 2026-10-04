@@ -30,7 +30,7 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
     if (!compareToken(accessToken, token)) return c.json({ error: 'Invalid access code' }, 401);
     await next();
   });
-  app.get('/v1/bootstrap', async c => c.json({ state: await store.read(), providers: providerStatus(), phoneNumber: process.env.VAPI_PHONE_NUMBER || null }));
+  app.get('/v1/bootstrap', async c => c.json({ state: await store.read(), providers: providerStatus() }));
   app.post('/v1/chat', async c => {
     const { text } = z.object({ text: z.string().min(1).max(10000) }).parse(await c.req.json());
     return c.json(await service.chat(text));
@@ -82,36 +82,6 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
     if (file.size > 20_000_000) return c.json({ error: 'Audio must be under 20 MB' }, 413);
     const transcript = await transcribeAudio(new Uint8Array(await file.arrayBuffer()), file.type || 'audio/m4a');
     return c.json({ transcript, ...await service.chat(transcript) });
-  });
-  app.post('/webhooks/vapi', async c => {
-    const secret = process.env.VAPI_WEBHOOK_SECRET;
-    if (!secret || !compareToken(secret, c.req.header('x-vapi-secret') ?? '')) return c.json({ error: 'Unauthorized' }, 401);
-    const body = await c.req.json() as { message?: { type?: string; customer?: { number?: string }; call?: { customer?: { number?: string } }; toolCallList?: Array<{ id: string; name?: string; parameters?: unknown; function?: { name?: string; arguments?: unknown } }> } };
-    if (body.message?.type !== 'tool-calls') return c.json({ ok: true });
-    const caller = body.message.customer?.number ?? body.message.call?.customer?.number;
-    const allowed = process.env.VAPI_ALLOWED_CALLER;
-    const calls = body.message.toolCallList ?? [];
-    if (!allowed || caller !== allowed) return c.json({ results: calls.map(call => ({ toolCallId: call.id, error: 'This number is not paired with the personal agent.' })) });
-    const results = [];
-    for (const call of calls) {
-      try {
-        const name = call.name ?? call.function?.name;
-        const rawArgs = call.parameters ?? call.function?.arguments;
-        const args = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
-        let result: string;
-        if (name === 'read_memory') {
-          const state = await store.read(); result = JSON.stringify({ inventory: state.inventory, preferences: state.preferences, tasks: state.tasks.slice(0, 5) });
-        } else if (name === 'remember') {
-          const { text, confirmed } = z.object({ text: z.string().min(1), confirmed: z.literal(true) }).parse(args);
-          result = (await service.chat(text)).reply;
-        } else if (name === 'start_recipe') {
-          const { url, confirmed } = z.object({ url: z.string().url(), confirmed: z.literal(true) }).parse(args);
-          const created = await service.recipeFromUrl(url); result = `Draft cart ${created.cart.id} created for ${created.recipe.title}. Review it in the app before checkout.`;
-        } else result = `Unknown tool ${name}`;
-        results.push({ name, toolCallId: call.id, result });
-      } catch (error) { results.push({ toolCallId: call.id, error: (error as Error).message }); }
-    }
-    return c.json({ results });
   });
   app.post('/webhooks/agentmail', async c => {
     const secret = process.env.AGENTMAIL_WEBHOOK_SECRET;

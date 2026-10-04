@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import Kernel from '@onkernel/sdk';
 import { Agent } from '@mastra/core/agent';
+import { Mastra } from '@mastra/core/mastra';
 import { createTool } from '@mastra/core/tools';
 import { recipeSchema, observationSchema, type Recipe, type Observation } from '@personal-agent/core';
 import { z } from 'zod';
@@ -20,11 +21,11 @@ export function providerStatus() {
     gemini: Boolean(process.env.GEMINI_API_KEY), neon: Boolean(process.env.DATABASE_URL),
     aiGateway: Boolean(process.env.NEON_AI_GATEWAY_API_KEY && process.env.NEON_AI_GATEWAY_BASE_URL),
     kernel: Boolean(process.env.KERNEL_API_KEY), exa: Boolean(process.env.EXA_API_KEY),
-    vapi: Boolean(process.env.VAPI_WEBHOOK_SECRET && process.env.VAPI_ALLOWED_CALLER && process.env.VAPI_PHONE_NUMBER), agentMail: Boolean(process.env.AGENTMAIL_WEBHOOK_SECRET),
+    agentMail: Boolean(process.env.AGENTMAIL_WEBHOOK_SECRET),
   };
 }
 
-const secretNames = ['APP_ACCESS_TOKEN', 'GEMINI_API_KEY', 'NEON_AI_GATEWAY_API_KEY', 'KERNEL_API_KEY', 'EXA_API_KEY', 'VAPI_WEBHOOK_SECRET', 'AGENTMAIL_WEBHOOK_SECRET', 'DATABASE_URL'];
+const secretNames = ['APP_ACCESS_TOKEN', 'GEMINI_API_KEY', 'NEON_AI_GATEWAY_API_KEY', 'KERNEL_API_KEY', 'EXA_API_KEY', 'AGENTMAIL_WEBHOOK_SECRET', 'DATABASE_URL'];
 /** Removes configured secret values and bearer-style tokens so provider failures can be shown to the user. */
 export function scrub(message: string): string {
   let clean = message;
@@ -117,10 +118,19 @@ export async function transcribeAudio(data: Uint8Array, mimeType: string): Promi
 
 export async function researchProducts(query: string): Promise<Array<{ title: string; url: string }>> {
   if (!process.env.EXA_API_KEY) return [];
-  const response = await fetch('https://api.exa.ai/search', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.EXA_API_KEY }, body: JSON.stringify({ query, type: 'auto', numResults: 5 }) });
+  const response = await withProvider('Exa', () => fetch('https://api.exa.ai/search', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.EXA_API_KEY! }, body: JSON.stringify({ query, type: 'auto', category: 'product', numResults: 5 }) }));
   if (!response.ok) throw new ProviderError('Exa', `search returned ${response.status}`);
-  const json = await response.json() as { results?: Array<{ title: string; url: string }> };
-  return (json.results ?? []).map(({ title, url }) => ({ title, url }));
+  const json = await withProvider('Exa', () => response.json()) as { results?: Array<{ title?: string; url?: string }> };
+  const seen = new Set<string>();
+  return (json.results ?? []).flatMap(({ title, url }) => {
+    if (!title?.trim() || !url) return [];
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'https:' || seen.has(parsed.href)) return [];
+      seen.add(parsed.href);
+      return [{ title: title.trim(), url: parsed.href }];
+    } catch { return []; }
+  });
 }
 
 export async function prepareRetailerCheckout(items: Array<{ name: string; amount: number; unit: string }>): Promise<{ url: string; sessionId?: string; note: string; mode: 'manual' | 'kernel' }> {
@@ -160,7 +170,8 @@ export async function prepareRetailerCheckout(items: Array<{ name: string; amoun
         model: { id: `neon/${process.env.NEON_AI_GATEWAY_MODEL ?? 'gpt-5-mini'}`, url: `${base.replace(/\/$/, '')}/v1`, apiKey: key, api: 'chat' },
         tools: { retailerBrowser: browserAction },
       });
-      const answer = await agent.generate(`Prepare the retailer cart for these approved items: ${JSON.stringify(items)}. Stop before payment and report exactly what you could add.`, { maxSteps: 16 });
+      const mastra = new Mastra({ agents: { retailer: agent }, logger: false, workers: false });
+      const answer = await mastra.getAgent('retailer').generate(`Prepare the retailer cart for these approved items: ${JSON.stringify(items)}. Stop before payment and report exactly what you could add.`, { maxSteps: 16 });
       note = answer.text || note;
     } catch (error) { note = `The browser is open, but Aeri stopped adding items: ${scrub((error as Error).message)}. Finish in the live view.`; }
   }

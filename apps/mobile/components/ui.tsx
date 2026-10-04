@@ -25,7 +25,7 @@ export function useReducedMotion() {
 }
 
 /** Aeri's presence. Still when idle; it only moves while Aeri is working or listening. */
-export function Aura({ size = 28, mode = 'idle' }: { size?: number; mode?: 'idle' | 'thinking' | 'listening' }) {
+export function Aura({ size = 28, mode = 'idle' }: { size?: number; mode?: 'idle' | 'thinking' | 'listening' | 'speaking' }) {
   const reduced = useReducedMotion();
   const spin = useRef(new Animated.Value(0)).current;
   const breathe = useRef(new Animated.Value(0)).current;
