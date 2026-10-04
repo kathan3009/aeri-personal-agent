@@ -1,6 +1,7 @@
 import { GoogleGenAI, type Part } from '@google/genai';
 import { productSpecSchema, rawVideoMapSchema, type ProductSpec, type RawVideoMap } from '@personal-agent/core';
 import { z } from 'zod';
+import { reserveGatewayRequests } from './gateway-budget.js';
 import { ProviderError, withProvider } from './providers.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -60,7 +61,8 @@ async function ask<T>(p: Perception, input: MediaInput, prompt: string, schema: 
   try {
     return await withProvider(provider, async () => {
       const part = await mediaPart(p, input, cleanup);
-      const response = await p.ai.models.generateContent({ model: p.model, contents: [{ role: 'user', parts: [part, { text: prompt }] }], config: { responseMimeType: 'application/json', temperature: 0.1 } });
+      if (p.kind === 'gateway') await reserveGatewayRequests();
+      const response = await p.ai.models.generateContent({ model: p.model, contents: [{ role: 'user', parts: [part, { text: prompt }] }], config: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 8192 } });
       const text = response.text ?? '';
       if (!text.trim()) throw new Error('the model returned no answer');
       const parsed = schema.safeParse(extractJson(text));

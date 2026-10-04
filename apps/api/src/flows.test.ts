@@ -187,6 +187,7 @@ describe('retailer-neutral shopping', () => {
     const inventory = await json(await post(app, `/v1/carts/${cart.id}/received`, { outcome: { [missing.id]: 'missing' } }));
     expect(inventory.map((i: any) => i.name)).not.toContain('Cream');
     expect(inventory.map((i: any) => i.name)).toContain('Pasta');
+    expect(inventory.find((i: any) => i.name === 'Pasta').quantity).toEqual({ amount: 16, unit: 'oz' });
     expect((await state(app)).events.find((e: any) => e.type === 'order.received').data.missing).toEqual(['Cream']);
   });
 

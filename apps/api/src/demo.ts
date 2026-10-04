@@ -75,14 +75,14 @@ export function fixtureMarket(needs: ShoppingNeed[], now: string, id: () => stri
 }
 
 const amountWord = (value: string) => ({ a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12, a_dozen: 12 } as Record<string, number>)[value.toLowerCase().replace(' ', '_')] ?? Number(value);
-export type Command = { kind: 'inventory' | 'consume' | 'preference' | 'recipe' | 'where' | 'link' | 'unknown'; key?: string; value?: string };
+export type Command = { kind: 'inventory' | 'consume' | 'preference' | 'recipe' | 'where' | 'link' | 'unknown'; key?: string; value?: string; place?: string };
 export function parseShoppingCommand(text: string): Command {
   const s = text.trim();
   const quantity = '(\\d+(?:\\.\\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|twelve|a dozen)';
   const used = s.match(new RegExp(`(?:we used|i used|we ate|i ate|we finished|i finished)\\s+${quantity}\\s+(.+?)(?:\\s+from (?:the )?(?:fridge|pantry|kitchen))?[.!]?$`, 'i'));
   if (used) return { kind: 'consume', key: used[2].replace(/[.!]$/, ''), value: String(amountWord(used[1])) };
-  const have = s.match(new RegExp(`(?:i have|we have|i've got|we've got|add)\\s+${quantity}\\s+(.+?)(?:\\s+in (?:the )?(?:fridge|pantry|kitchen|closet))?[.!]?$`, 'i'));
-  if (have) return { kind: 'inventory', key: have[2].replace(/[.!]$/, ''), value: String(amountWord(have[1])) };
+  const have = s.match(new RegExp(`(?:i have|we have|i've got|we've got|add)\\s+${quantity}\\s+(.+?)(?:\\s+in (?:the )?(fridge|pantry|kitchen|closet))?[.!]?$`, 'i'));
+  if (have) return { kind: 'inventory', key: have[2].replace(/[.!]$/, ''), value: String(amountWord(have[1])), place: have[3] };
   if (/^(where(?:'s| is| are| did i (?:last )?(?:see|put|leave))|do i have|have i got)\b/i.test(s)) return { kind: 'where', key: s };
   const size = s.match(/(?:my|i wear|i use)\s+(.+?)\s+(?:size is|size)\s+(.+?)[.!]?$/i);
   if (size) return { kind: 'preference', key: `${size[1]} size`, value: size[2].replace(/[.!]$/, '') };

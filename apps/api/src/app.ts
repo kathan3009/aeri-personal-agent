@@ -6,6 +6,8 @@ import { Webhook } from 'svix';
 import { correctionSchema, unitSchema } from '@personal-agent/core';
 import { hasFfmpeg, readFrame } from './media.js';
 import { ProviderError, providerStatus, scrub, transcribeAudio } from './providers.js';
+import { registerRetailerRoutes } from './retailer-api.js';
+import { matchReceipt, receiptDedupKey } from './receipts.js';
 import { AgentService } from './service.js';
 import type { Store } from './store.js';
 
@@ -32,6 +34,7 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
     if (!compareToken(accessToken, token)) return c.json({ error: 'Invalid access code' }, 401);
     await next();
   });
+  registerRetailerRoutes(app, store, accessToken);
   const wait = (c: { req: { query: (key: string) => string | undefined } }) => c.req.query('wait') === '1';
   app.get('/v1/bootstrap', async c => c.json({ state: await store.read(), providers: { ...providerStatus(), frames: await hasFfmpeg() } }));
   app.post('/v1/chat', async c => {
@@ -114,6 +117,11 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
   app.post('/v1/carts/:id/cancel', async c => c.json(await service.cancel(c.req.param('id'))));
   app.post('/v1/carts/:id/checkout', async c => c.json(await service.checkout(c.req.param('id'), wait(c))));
   app.get('/v1/carts/:id/review', async c => c.json(await service.reviewLink(c.req.param('id'))));
+  app.get('/v1/carts/:id/summary', async c => c.json(await service.checkoutSummary(c.req.param('id'))));
+  app.post('/v1/carts/:id/purchase-approval', async c => {
+    const { snapshotId, maximumTotalCents } = z.object({ snapshotId: z.string().min(1), maximumTotalCents: z.number().int().nonnegative() }).parse(await c.req.json());
+    return c.json(await service.approvePurchase(c.req.param('id'), snapshotId, maximumTotalCents));
+  });
   app.post('/v1/carts/:id/ordered', async c => {
     const { reference } = z.object({ reference: z.string().trim().min(1).max(80) }).parse(await c.req.json());
     return c.json(await service.markOrdered(c.req.param('id'), reference));
@@ -134,23 +142,24 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
     const secret = process.env.AGENTMAIL_WEBHOOK_SECRET;
     if (!secret) return c.json({ error: 'AgentMail webhook not configured' }, 503);
     const payload = await c.req.text();
-    let event: { event_id?: string; event_type?: string; message?: { message_id?: string; subject?: string; preview?: string; from?: string | string[]; from_?: string | string[]; sender?: string } };
+    let event: { event_id?: string; event_type?: string; message?: { message_id?: string; subject?: string; preview?: string; text?: string; from?: string | string[]; from_?: string | string[]; sender?: string } };
     try {
       new Webhook(secret).verify(payload, {
         'svix-id': c.req.header('svix-id') ?? '',
         'svix-timestamp': c.req.header('svix-timestamp') ?? '',
         'svix-signature': c.req.header('svix-signature') ?? '',
       });
-      event = JSON.parse(payload) as typeof event;
+      event = z.object({ event_id: z.string().max(1000).optional(), event_type: z.string().max(100), message: z.object({ message_id: z.string().max(1000).optional(), subject: z.string().max(10000).optional(), preview: z.string().max(100000).optional(), text: z.string().max(1000000).optional(), from: z.union([z.string().max(500), z.array(z.string().max(500)).max(20)]).optional(), from_: z.union([z.string().max(500), z.array(z.string().max(500)).max(20)]).optional(), sender: z.string().max(500).optional() }).optional() }).parse(JSON.parse(payload));
     } catch { return c.json({ error: 'Invalid webhook signature' }, 401); }
     if (event.event_type !== 'message.received') return c.json({ ok: true });
     const eventId = event.event_id ?? c.req.header('svix-id')!;
+    if (!eventId || !await store.claimReceipt(receiptDedupKey(eventId, event.message?.message_id))) return c.json({ ok: true });
     await store.update(state => {
-      if (state.events.some(item => item.type === 'email.received' && (item.data as { eventId?: string }).eventId === eventId)) return;
+      const receipt = matchReceipt({ subject: event.message?.subject, preview: event.message?.preview, text: event.message?.text, sender: event.message?.sender ?? event.message?.from_ ?? event.message?.from }, state.carts);
       const subject = event.message?.subject ?? 'New receipt or delivery email';
       const at = new Date().toISOString();
-      state.tasks.unshift({ id: randomUUID(), kind: 'receipt', title: 'Review email evidence', status: 'needs_review', detail: subject, createdAt: at, updatedAt: at });
-      state.events.push({ id: randomUUID(), type: 'email.received', at, data: { eventId, messageId: event.message?.message_id, subject, preview: event.message?.preview, sender: event.message?.sender ?? event.message?.from_ ?? event.message?.from } });
+      state.tasks.unshift({ id: randomUUID(), kind: 'receipt', title: 'Review email evidence', status: 'needs_review', detail: receipt ? `Possible ${receipt.deliveryClaim.replace('_', ' ')} for ${receipt.merchant} order ${receipt.orderReference}. Check the items before updating memory.` : subject.slice(0, 240), subjectId: receipt?.cartId, createdAt: at, updatedAt: at });
+      state.events.push({ id: randomUUID(), type: 'email.received', at, data: { eventId, messageId: event.message?.message_id, subject: subject.slice(0, 240), receipt, sender: event.message?.sender ?? event.message?.from_ ?? event.message?.from } });
     });
     return c.json({ ok: true });
   });

@@ -5,6 +5,10 @@ import { createTool } from '@mastra/core/tools';
 import { normalizeName, parsePackSize, type Offer, type ShoppingNeed, type StoreQuote, type Verification } from '@personal-agent/core';
 import { z } from 'zod';
 import { ProviderError, researchProducts, scrub, withProvider } from './providers.js';
+import { merchantBrowserOptions, retailerDomain } from './merchant-auth.js';
+import { selectStore, type StoreSelection } from './merchant-store.js';
+import { readMerchantSummary as readSummary, type MerchantSummary } from './merchant-summary.js';
+import { reserveGatewayRequests } from './gateway-budget.js';
 
 /**
  * Retailer-neutral discovery and verification. Exa finds candidate product pages (discovery is not verification);
@@ -104,7 +108,7 @@ export function toVerification(facts: PageFacts | null, checkedAt: string, error
 }
 
 /** Reads product pages with one stealth Kernel browser per store, stores in parallel; every session is deleted. */
-export async function verifyPages(urls: string[], now: () => string): Promise<Map<string, Verification>> {
+export async function verifyPages(urls: string[], now: () => string, context: Pick<MerchantContext, 'zip'> = {}): Promise<Map<string, Verification>> {
   const client = kernel();
   const results = new Map<string, Verification>();
   if (!client || !urls.length) return results;
@@ -114,10 +118,18 @@ export async function verifyPages(urls: string[], now: () => string): Promise<Ma
     // Headful: headless renderers crashed on Target product pages during the live check.
     const browser = await withProvider('Kernel', () => client.browsers.create({ stealth: true, headless: false, timeout_seconds: 120 }));
     try {
+      let selected: StoreSelection | undefined;
+      if (context.zip) {
+        await client.browsers.playwright.execute(browser.session_id, { code: `await page.goto(${JSON.stringify(new URL(group[0]).origin)}, { waitUntil: 'domcontentloaded' }); return page.url();`, timeout_sec: 35 });
+        selected = await selectStore(client, browser.session_id, group[0], context.zip);
+      }
       for (const url of group) {
         try {
           const run = await client.browsers.playwright.execute(browser.session_id, { code: extractScript(url), timeout_sec: 50 });
-          results.set(url, run.success ? toVerification(run.result as PageFacts, now()) : toVerification(null, now(), run.error));
+          const v = run.success ? toVerification(run.result as PageFacts, now()) : toVerification(null, now(), run.error);
+          if (selected?.status === 'selected') v.storeLocation = `${selected.storeName} (selected for ZIP ${selected.requestedZip})`;
+          else if (selected && (v.status === 'verified' || v.status === 'partial')) { v.status = 'partial'; v.note = selected.note; }
+          results.set(url, v);
         } catch (error) { results.set(url, toVerification(null, now(), (error as Error).message)); }
       }
     } finally { await client.browsers.deleteByID(browser.session_id).catch(() => undefined); }
@@ -129,12 +141,12 @@ export async function verifyPages(urls: string[], now: () => string): Promise<Ma
  * Live multi-store offers: Exa per need restricted to the chosen merchants, then the top page per merchant is read
  * at the retailer. Fees, tax, tip and distance are not published on product pages, so they stay unknown.
  */
-export async function liveOffers(needs: ShoppingNeed[], domains: string[], now: () => string, id: () => string): Promise<{ offers: Offer[]; quotes: StoreQuote[] }> {
+export async function liveOffers(needs: ShoppingNeed[], domains: string[], now: () => string, id: () => string, context: Pick<MerchantContext, 'zip'> = {}): Promise<{ offers: Offer[]; quotes: StoreQuote[] }> {
   // Only real product pages become offers; articles and category pages are skipped.
   const found = await Promise.all(needs.slice(0, 8).map(async need => ({ need, hits: (await discoverProducts(`${need.brand ?? ''} ${need.name}${need.quantity.unit === 'each' ? '' : ` ${need.quantity.amount} ${need.quantity.unit}`} grocery`.trim(), domains, 2).catch(() => []))
     .filter(hit => productPath.test(new URL(hit.url).pathname)).filter((hit, i, all) => all.findIndex(h => h.merchant === hit.merchant) === i) })));
   const urls = found.flatMap(f => f.hits.map(h => h.url));
-  const verified = await verifyPages(urls, now);
+  const verified = await verifyPages(urls, now, context);
   const offers: Offer[] = found.flatMap(({ need, hits }) => hits.map(hit => {
     const v = verified.get(hit.url);
     const ok = v?.status === 'verified';
@@ -153,38 +165,71 @@ export async function liveOffers(needs: ShoppingNeed[], domains: string[], now: 
 }
 
 export type CartLine = { itemId: string; name: string; amount: number; unit: string; packs: number; productUrl?: string };
-export type PreparedCart = { url: string; liveViewUrl?: string; sessionId?: string; note: string; mode: 'manual' | 'kernel'; lines: Array<{ itemId: string; result: 'added' | 'unavailable' | 'substituted' | 'uncertain'; detail?: string }> };
+export type MerchantContext = { zip?: string; connectionId?: string };
+export type PreparedCart = { url: string; liveViewUrl?: string; sessionId?: string; note: string; mode: 'manual' | 'kernel'; storeSelection?: StoreSelection; lines: Array<{ itemId: string; result: 'added' | 'unavailable' | 'substituted' | 'uncertain'; detail?: string; confirmedPacks?: number }> };
 
-const addScript = (url: string) => `
+export const addScript = (url: string, packs = 1) => {
+if (!Number.isInteger(packs) || packs < 1 || packs > 99) throw new Error('Approved pack count must be between 1 and 99');
+return `
 await page.goto(${JSON.stringify(url)}, { waitUntil: 'domcontentloaded', timeout: 30000 });
 await page.waitForTimeout(2000);
+const expectedDomain = ${JSON.stringify(retailerDomain(url))}, actual = new URL(page.url());
+if (actual.protocol !== 'https:' || !(actual.hostname === expectedDomain || actual.hostname.endsWith('.' + expectedDomain))) return { result: 'uncertain', detail: 'The product page left the approved retailer' };
+const path = actual.pathname.toLowerCase(), segments = path.split('/');
+if (segments.some(s => ['checkout', 'payment', 'review-order', 'place-order', 'login', 'signin'].includes(s))) return { result: 'uncertain', detail: 'Checkout and account actions are reserved for the user' };
+if (!segments.some(s => ['p', 'ip', 'dp', 'pd', 'product', 'products', 'prod', 'item', 'items', 'sku'].includes(s)) && !path.includes('-p-')) return { result: 'uncertain', detail: 'The store did not open the approved product page' };
 if (/sign ?in|log ?in|captcha|access denied/i.test(await page.title())) return { result: 'uncertain', detail: 'The store asked for sign-in or a check' };
-const button = page.getByRole('button', { name: /add to (cart|bag|basket)|^add$|add for (delivery|pickup|shipping)/i }).first();
+const packs = ${packs};
+const quantity = page.locator('select[aria-label*="uantity"], input[aria-label*="uantity"]').first();
+const hasQuantity = !!(await quantity.count());
+if (packs > 1 && !hasQuantity) return { result: 'uncertain', detail: 'Set the approved quantity of ' + packs + ' in the live cart; this page has no supported quantity control' };
+if (hasQuantity) {
+ const tag = await quantity.evaluate(e => e.tagName.toLowerCase());
+ try { if (tag === 'select') await quantity.selectOption(String(packs)); else await quantity.fill(String(packs)); } catch { return { result: 'uncertain', detail: 'The store refused the approved quantity' }; }
+ if (Number(await quantity.inputValue()) !== packs) return { result: 'uncertain', detail: 'The store did not confirm the approved quantity' };
+}
+const button = page.getByRole('button', { name: /^(add|add to cart|add to bag)$/i, exact: true }).first();
 await button.waitFor({ state: 'visible', timeout: 15000 }).catch(() => undefined);
 if (!(await button.count())) return { result: /out of stock|sold out|unavailable/i.test(await page.locator('body').innerText()) ? 'unavailable' : 'uncertain', detail: 'No add-to-cart button found' };
 if (await button.isDisabled().catch(() => false)) return { result: 'unavailable', detail: 'Add to cart is disabled' };
+const before = (await page.locator('body').innerText()).slice(0, 6000);
 await button.click({ timeout: 10000 });
 await page.waitForTimeout(2500);
 const text = (await page.locator('body').innerText()).slice(0, 6000);
-return /added to (your )?(cart|bag|basket)|in (your )?cart|view cart|item added/i.test(text) ? { result: 'added' } : { result: 'uncertain', detail: 'Clicked add, but the page did not confirm it' };`;
+const confirms = /added to (your )?(cart|bag|basket)|item added/i;
+return confirms.test(text) && !confirms.test(before) ? { result: 'added', ...(hasQuantity ? { confirmedPacks: packs } : {}) } : { result: 'uncertain', detail: 'Clicked add, but the page did not show a new addition confirmation' };`;
+};
 
 /**
  * Prepares the store cart for exactly the approved lines. With Kernel, product pages that are known get one deterministic
  * add-to-cart click each; the page must confirm before a line counts as added. It never opens checkout or payment.
  * Without Kernel, the person adds the items at the store themselves.
  */
-export async function prepareMerchantCart(storeUrl: string, lines: CartLine[]): Promise<PreparedCart> {
+export async function prepareMerchantCart(storeUrl: string, lines: CartLine[], context: MerchantContext = {}): Promise<PreparedCart> {
   const host = new URL(storeUrl).hostname.replace(/^www\./, '');
+  const domain = retailerDomain(storeUrl);
+  for (const line of lines) if (line.productUrl && retailerDomain(line.productUrl) !== domain) throw new Error('An approved product belongs to another retailer');
   const client = kernel();
   if (!client) return { url: storeUrl, mode: 'manual', lines: [], note: `Aeri opened ${host}. Add the ${lines.length} approved items there and check out yourself.` };
-  const browser = await withProvider('Kernel', () => client.browsers.create({ stealth: true, timeout_seconds: 1200 }));
+  const options = await merchantBrowserOptions(client, storeUrl, context.connectionId);
+  const browser = await withProvider('Kernel', () => client.browsers.create(options));
   const results: PreparedCart['lines'] = [];
+  let storeSelection: StoreSelection | undefined;
   try {
+    if (context.zip) {
+      await client.browsers.playwright.execute(browser.session_id, { code: `await page.goto(${JSON.stringify(storeUrl)}, { waitUntil: 'domcontentloaded' }); return page.url();`, timeout_sec: 35 });
+      storeSelection = await selectStore(client, browser.session_id, storeUrl, context.zip);
+      // No mutation at a store whose requested location has not been confirmed.
+      if (storeSelection.status !== 'selected') {
+        return { url: storeUrl, liveViewUrl: browser.browser_live_view_url ?? undefined, sessionId: browser.session_id, mode: 'kernel', storeSelection,
+          lines: lines.map(l => ({ itemId: l.itemId, result: 'uncertain', detail: storeSelection!.note })), note: `${storeSelection.note}. Review the location before adding items.` };
+      }
+    }
     for (const line of lines) {
       if (!line.productUrl) continue;
-      const run = await client.browsers.playwright.execute(browser.session_id, { code: addScript(line.productUrl), timeout_sec: 50 }).catch(error => ({ success: false, error: (error as Error).message, result: undefined }));
-      const outcome = run.success ? run.result as { result: 'added' | 'unavailable' | 'uncertain'; detail?: string } : { result: 'uncertain' as const, detail: scrub(String(run.error ?? 'Browser step failed')).slice(0, 100) };
-      results.push({ itemId: line.itemId, result: outcome.result, detail: outcome.result === 'added' && line.packs > 1 ? `Added 1; set quantity to ${line.packs} in the cart` : outcome.detail });
+      const run = await client.browsers.playwright.execute(browser.session_id, { code: addScript(line.productUrl, line.packs), timeout_sec: 50 }).catch(error => ({ success: false, error: (error as Error).message, result: undefined }));
+      const outcome = run.success ? run.result as { result: 'added' | 'unavailable' | 'uncertain'; detail?: string; confirmedPacks?: number } : { result: 'uncertain' as const, detail: scrub(String(run.error ?? 'Browser step failed')).slice(0, 100) };
+      results.push({ itemId: line.itemId, result: outcome.result, detail: outcome.detail, confirmedPacks: outcome.confirmedPacks });
     }
     const unlinked = lines.filter(line => !line.productUrl);
     if (unlinked.length) results.push(...await agentAdd(client, browser.session_id, storeUrl, unlinked));
@@ -198,25 +243,40 @@ export async function prepareMerchantCart(storeUrl: string, lines: CartLine[]): 
   const note = results.length
     ? `Aeri added ${added} of ${lines.length} items at ${host}${added < lines.length ? '; check the rest in the store' : ''}. Review the real cart, then pay there yourself.`
     : `A private browser is open at ${host}. Add the ${lines.length} approved items, review the cart, and pay there yourself.`;
-  return { url: storeUrl, liveViewUrl: browser.browser_live_view_url ?? undefined, sessionId: browser.session_id, note, mode: 'kernel', lines: results };
+  return { url: storeUrl, liveViewUrl: browser.browser_live_view_url ?? undefined, sessionId: browser.session_id, note, mode: 'kernel', storeSelection, lines: results };
+}
+
+export async function readMerchantSummary(sessionId: string, storeUrl: string, now?: () => string): Promise<MerchantSummary> {
+  const client = kernel();
+  if (!client) throw new Error('Kernel is required to read the hosted merchant cart');
+  return readSummary(client, sessionId, storeUrl, now);
 }
 
 /** For lines without a product page, a bounded Mastra agent may search and click add (Gateway required). */
 async function agentAdd(client: Kernel, sessionId: string, storeUrl: string, lines: CartLine[]): Promise<PreparedCart['lines']> {
+  // The general agent has no verified quantity setter. It must not add a single pack for a multi-pack approval.
+  const multiple = lines.filter(line => line.packs !== 1);
+  if (multiple.length) {
+    const single = lines.filter(line => line.packs === 1);
+    return [...multiple.map(line => ({ itemId: line.itemId, result: 'uncertain' as const, detail: `Set the approved ${line.packs} packs in the store; this product needs a verified quantity control` })),
+      ...(single.length ? await agentAdd(client, sessionId, storeUrl, single) : [])];
+  }
   const key = process.env.NEON_AI_GATEWAY_API_KEY || process.env.NEON_AI_GATEWAY_TOKEN, base = process.env.NEON_AI_GATEWAY_BASE_URL;
   if (!key || !base) return lines.map(line => ({ itemId: line.itemId, result: 'uncertain' as const, detail: `Search for ${line.name} in the store` }));
   const origin = new URL(storeUrl).hostname;
   await client.browsers.playwright.execute(sessionId, { code: `await page.goto(${JSON.stringify(storeUrl)}); return page.url();`, timeout_sec: 40 });
   const snapshot = `return { url: page.url(), title: await page.title(), text: (await page.locator('body').innerText()).slice(0, 4500), buttons: await page.getByRole('button').allTextContents().then(xs => xs.slice(0, 25)) };`;
   const browserAction = createTool({
-    id: 'retailerBrowser', description: 'Inspect the retailer page, fill a search box, or click a visible product/add button. Never place an order or pay.',
+    id: 'retailerBrowser', description: 'Inspect the retailer page, fill exactly Search or Search products, or click exactly Add, Add to cart, or Add to bag. Never place an order or pay.',
     inputSchema: z.object({ action: z.enum(['inspect', 'fill', 'click']), label: z.string().optional(), value: z.string().optional() }),
     execute: async ({ action, label, value }) => {
       if (action !== 'inspect' && !label) throw new Error('A visible label is required');
-      if (action === 'click' && /checkout|place order|pay|purchase|subscribe|sign in|login/i.test(label!)) throw new Error('That action is reserved for the user in live view');
-      const operation = action === 'fill' ? `const field = page.getByPlaceholder(${JSON.stringify(label ?? '')}, { exact: false }).first(); if (await field.count()) await field.fill(${JSON.stringify(value ?? '')}); else await page.getByRole('textbox', { name: ${JSON.stringify(label ?? '')}, exact: false }).first().fill(${JSON.stringify(value ?? '')}); await page.keyboard.press('Enter');`
-        : action === 'click' ? `const button = page.getByRole('button', { name: ${JSON.stringify(label ?? '')}, exact: false }).first(); if (await button.count()) await button.click(); else await page.getByRole('link', { name: ${JSON.stringify(label ?? '')}, exact: false }).first().click(); await page.waitForTimeout(1500);` : '';
-      const result = await client.browsers.playwright.execute(sessionId, { code: `${operation} ${snapshot}`, timeout_sec: 35 });
+      if (action === 'click' && !/^(add|add to cart|add to bag)$/i.test(label!.trim())) throw new Error('Only exact add-to-cart buttons are permitted');
+      if (action === 'fill' && !/^(search|search products)$/i.test(label!.trim())) throw new Error('The cart agent can fill only product search fields');
+      const operation = action === 'fill' ? `const field = page.getByPlaceholder(${JSON.stringify(label ?? '')}, { exact: true }).first(); if (await field.count()) await field.fill(${JSON.stringify(value ?? '')}); else await page.getByRole('textbox', { name: ${JSON.stringify(label ?? '')}, exact: true }).first().fill(${JSON.stringify(value ?? '')}); await page.keyboard.press('Enter');`
+        : action === 'click' ? `await page.getByRole('button', { name: ${JSON.stringify(label ?? '')}, exact: true }).first().click(); await page.waitForTimeout(1500);` : '';
+      const guard = `const current = new URL(page.url()); const allowedHost = ${JSON.stringify(origin.replace(/^www\./, ''))}; if (current.protocol !== 'https:' || !(current.hostname === allowedHost || current.hostname.endsWith('.' + allowedHost)) || current.pathname.toLowerCase().split('/').some(s => ['checkout', 'payment', 'review-order', 'place-order', 'login', 'signin'].includes(s))) throw new Error('This page is reserved for the user');`;
+      const result = await client.browsers.playwright.execute(sessionId, { code: `${guard} ${operation} ${snapshot}`, timeout_sec: 35 });
       if (!result.success) return { error: String(result.error ?? 'Browser action failed') };
       const page = result.result as { url?: string };
       if (page.url && new URL(page.url).hostname !== origin && !new URL(page.url).hostname.endsWith(`.${origin.replace(/^www\./, '')}`)) throw new Error('Retailer browser navigated outside the store');
@@ -226,16 +286,18 @@ async function agentAdd(client: Kernel, sessionId: string, storeUrl: string, lin
   const agent = new Agent({
     id: 'retailer-cart-agent', name: 'Retailer cart assistant',
     instructions: 'Use retailerBrowser to add only the exact approved items to the store cart. Inspect first. If sign-in or a delivery location is required, stop. Never click checkout, pay, place order, or choose unapproved substitutes. Reply with JSON only: {"lines":[{"name": string, "result": "added"|"unavailable"|"uncertain", "detail": string}]}; say added only when the page confirmed it.',
-    model: { id: `neon/${process.env.NEON_AI_GATEWAY_MODEL ?? 'gpt-5-mini'}`, url: `${base.replace(/\/$/, '')}/v1`, apiKey: key, api: 'chat' },
+    model: { id: `neon/${process.env.NEON_AI_GATEWAY_MODEL ?? 'gpt-5-4-mini'}`, url: `${base.replace(/\/$/, '')}/v1`, apiKey: key, api: 'chat' },
     tools: { retailerBrowser: browserAction },
   });
   try {
     const mastra = new Mastra({ agents: { retailer: agent }, logger: false, workers: false });
-    const answer = await mastra.getAgent('retailer').generate(`Approved items: ${JSON.stringify(lines.map(l => ({ name: l.name, amount: l.amount, unit: l.unit })))}`, { maxSteps: 16 });
+    await reserveGatewayRequests(6);
+    const answer = await mastra.getAgent('retailer').generate(`Approved items: ${JSON.stringify(lines.map(l => ({ name: l.name, amount: l.amount, unit: l.unit })))}`, { maxSteps: 6, modelSettings: { maxOutputTokens: 1500 } });
     const parsed = z.object({ lines: z.array(z.object({ name: z.string(), result: z.enum(['added', 'unavailable', 'uncertain']), detail: z.string().optional() })) }).safeParse(JSON.parse(answer.text.replace(/^```(json)?|```$/g, '')));
     return lines.map(line => {
       const found = parsed.success ? parsed.data.lines.find(l => normalizeName(l.name) === normalizeName(line.name)) : undefined;
-      return { itemId: line.itemId, result: found?.result ?? 'uncertain', detail: found?.detail ?? 'Check this item in the store' };
+      // A model report is not independent evidence of the exact product/quantity in the merchant cart.
+      return { itemId: line.itemId, result: found?.result === 'unavailable' ? 'unavailable' : 'uncertain', detail: found?.result === 'added' ? 'The agent reports an addition; verify this exact item and quantity in the real cart' : found?.detail ?? 'Check this item in the store' };
     });
   } catch (error) { return lines.map(line => ({ itemId: line.itemId, result: 'uncertain' as const, detail: `Aeri stopped: ${scrub((error as Error).message).slice(0, 80)}` })); }
 }

@@ -114,3 +114,14 @@ export async function downloadVideo(url: string, maxBytes = 90_000_000): Promise
   for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.byteLength; }
   return { data, mimeType };
 }
+
+/** Keep large phone photos inside the Gateway inline limit; never change the original on the phone. */
+export async function compressImageForModel(data: Uint8Array): Promise<Uint8Array | null> {
+  if (!(await hasFfmpeg())) return null;
+  return withTempFile(data, 'image', async path => {
+    try {
+      const { stdout } = await run('ffmpeg', ['-v', 'error', '-i', path, '-frames:v', '1', '-vf', 'scale=1600:1600:force_original_aspect_ratio=decrease', '-c:v', 'mjpeg', '-q:v', '3', '-f', 'image2pipe', '-'], { timeout: 20_000, maxBuffer: 4_000_000, encoding: 'buffer' });
+      return stdout.byteLength <= 3_000_000 ? new Uint8Array(stdout) : null;
+    } catch { return null; }
+  });
+}

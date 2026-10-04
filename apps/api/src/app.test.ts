@@ -8,7 +8,7 @@ import { createStore, type Store } from './store.js';
 
 let directory = ''; let store: Store;
 afterEach(async () => { vi.unstubAllGlobals(); await store?.close(); if (directory) await rm(directory, { recursive: true, force: true }); });
-async function setup() { directory = await mkdtemp(join(tmpdir(), 'aeri-test-')); store = createStore('', directory); return createApp(store, 'test-code'); }
+async function setup() { directory = await mkdtemp(join(tmpdir(), 'aeri-test-')); process.env.DATA_DIR = directory; store = createStore('', directory); return createApp(store, 'test-code'); }
 const auth = { Authorization: 'Bearer test-code', 'Content-Type': 'application/json' };
 async function json(response: Response) { return response.json() as Promise<any>; }
 
@@ -153,7 +153,7 @@ describe('authenticated household flow', () => {
       const reply = await json(await app.request('/v1/chat', { method: 'POST', headers: auth, body: JSON.stringify({ text: 'Can you suggest a dinner?' }) }));
       expect(reply.reply).toBe('I can help plan that.');
       expect(requests[0].url).toBe('https://gateway.example/v1/chat/completions');
-      expect(requests[0].body.model).toBe('gpt-5-mini');
+      expect(requests[0].body.model).toBe(process.env.NEON_AI_GATEWAY_MODEL ?? 'gpt-5-4-mini');
     } finally {
       if (priorKey === undefined) delete process.env.NEON_AI_GATEWAY_API_KEY; else process.env.NEON_AI_GATEWAY_API_KEY = priorKey;
       if (priorBase === undefined) delete process.env.NEON_AI_GATEWAY_BASE_URL; else process.env.NEON_AI_GATEWAY_BASE_URL = priorBase;

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { freshness, inventoryItemSchema, type InventoryItem } from './inventory';
-import { covers } from './names';
+import { covers, normalizeName } from './names';
+import { checkoutSnapshotSchema, purchaseApprovalSchema } from './checkout';
 import { candidateSchema, photoSearchSchema, verificationSchema } from './product';
 import { proposalSchema } from './shopping';
 import { parsePackSize, quantitySchema, toBase, type Quantity } from './units';
@@ -12,6 +13,7 @@ export * from './video';
 export * from './inventory';
 export * from './product';
 export * from './shopping';
+export * from './checkout';
 
 export const ingredientSchema = z.object({
   name: z.string().min(1), quantity: quantitySchema, optional: z.boolean().default(false),
@@ -31,6 +33,8 @@ export type Recipe = z.infer<typeof recipeSchema>;
 export const itemOfferSchema = z.object({
   merchant: z.string(), title: z.string(), url: z.string().url().optional(), priceCents: z.number().int().nonnegative().nullable(),
   packs: z.number().int().nonnegative().default(1), verified: z.boolean(), capturedAt: z.string(), match: z.enum(['exact', 'likely', 'similar']).optional(),
+  /** Quantity contained in one purchased pack; distinct from the recipe's missing amount. */
+  packSize: quantitySchema.optional(),
 });
 export const cartItemSchema = ingredientSchema.extend({
   id: z.string(), estimatedPriceCents: z.number().int().nonnegative().nullable(),
@@ -42,6 +46,15 @@ export const cartItemSchema = ingredientSchema.extend({
   delivery: z.enum(['received', 'missing', 'substituted']).optional(),
 });
 export type CartItem = z.infer<typeof cartItemSchema>;
+/** Received inventory reflects all purchased packs, rather than only the recipe amount they were bought for.
+ * Unknown pack contents retain the requested quantity until the user corrects it at delivery review.
+ */
+export function deliveredQuantity(item: CartItem): Quantity {
+  const offer = item.offer;
+  return offer?.packSize && offer.packs > 0
+    ? { amount: offer.packSize.amount * offer.packs, unit: offer.packSize.unit }
+    : { ...item.quantity };
+}
 export const cartSchema = z.object({
   id: z.string(), recipeId: z.string().optional(), title: z.string().optional(),
   origin: z.enum(['recipe', 'photo', 'request']).default('recipe'), items: z.array(cartItemSchema),
@@ -51,11 +64,12 @@ export const cartSchema = z.object({
   estimatedTotalCents: z.number().int().nonnegative().nullable().optional(),
   // How the store was opened: `manual` means the user adds items themselves; `kernel` is a hosted browser session.
   checkout: z.object({
-    mode: z.enum(['manual', 'kernel']), note: z.string(), sessionId: z.string().optional(), openedAt: z.string(),
+    mode: z.enum(['manual', 'kernel']), note: z.string(), sessionId: z.string().optional(), preparationId: z.string().optional(), openedAt: z.string(),
     status: z.enum(['preparing', 'ready', 'failed']).default('ready'), closedAt: z.string().optional(),
     lines: z.array(z.object({ itemId: z.string(), result: z.enum(['added', 'unavailable', 'substituted', 'uncertain']), detail: z.string().optional() })).default([]),
   }).optional(),
   receivedAt: z.string().optional(),
+  checkoutSnapshot: checkoutSnapshotSchema.optional(), purchaseApproval: purchaseApprovalSchema.optional(),
   createdAt: z.string(), updatedAt: z.string(),
 });
 export type Cart = z.infer<typeof cartSchema>;
@@ -88,23 +102,39 @@ export type IngredientPlan = { ingredient: Ingredient; have: Quantity | null; bu
  * silently: the ingredient stays on the list with a note asking the person to check.
  */
 export function planIngredients(recipe: Recipe, inventory: InventoryItem[], now?: string): IngredientPlan[] {
-  return recipe.ingredients.filter(i => !i.optional).map(ingredient => {
+  // Reserve fractions of each physical item across ingredients, including when a counted pack is used by weight.
+  const remaining = inventory.map(() => 1);
+  const ingredients = recipe.ingredients.filter(i => !i.optional);
+  const matchesFor = (ingredient: Ingredient) => inventory.map((item, index) => {
     const needed = toBase(ingredient.quantity);
-    // A counted package with a legible pack size ("1 box, 16 oz") also counts by weight or volume.
-    const amountOf = (item: InventoryItem): Quantity => { const pack = item.quantity.unit === 'each' && needed.dimension !== 'count' ? parsePackSize(item.size) : null; return pack ? { amount: pack.amount * item.quantity.amount, unit: pack.unit } : item.quantity; };
-    const matching = inventory.filter(item => item.confidence === 'confirmed' && covers(item.name, ingredient.name) && toBase(amountOf(item)).dimension === needed.dimension);
-    const trusted = now ? matching.filter(item => freshness(item, now).state === 'fresh') : matching;
-    const doubtful = now ? matching.filter(item => freshness(item, now).state !== 'fresh') : [];
-    const available = trusted.reduce((total, item) => total + toBase(amountOf(item)).amount, 0);
-    const haveAll = matching.reduce((total, item) => total + toBase(amountOf(item)).amount, 0);
+    const pack = item.quantity.unit === 'each' && needed.dimension !== 'count' ? parsePackSize(item.size) : null;
+    const amount = toBase(pack ? { amount: pack.amount * item.quantity.amount, unit: pack.unit } : item.quantity);
+    return { item, index, amount };
+  }).filter(({ item, amount }) => item.confidence === 'confirmed' && covers(item.name, ingredient.name) && amount.dimension === toBase(ingredient.quantity).dimension);
+  // Specific needs with fewer possible substitutes claim their inventory before broad needs such as "pasta".
+  const order = ingredients.map((ingredient, index) => ({ ingredient, index, matching: matchesFor(ingredient) })).sort((a, b) => a.matching.length - b.matching.length || a.index - b.index);
+  const plans: IngredientPlan[] = [];
+  for (const { ingredient, index, matching } of order) {
+    const needed = toBase(ingredient.quantity);
+    const trusted = (now ? matching.filter(({ item }) => freshness(item, now).state === 'fresh') : matching).sort((a, b) => Number(normalizeName(b.item.name) === normalizeName(ingredient.name)) - Number(normalizeName(a.item.name) === normalizeName(ingredient.name)));
+    const doubtful = now ? matching.filter(({ item }) => freshness(item, now).state !== 'fresh') : [];
+    const available = trusted.reduce((total, entry) => total + entry.amount.amount * remaining[entry.index], 0);
+    const haveAll = matching.reduce((total, entry) => total + entry.amount.amount * remaining[entry.index], 0);
     const have = matching.length ? { amount: Math.round(haveAll / (needed.amount / ingredient.quantity.amount) * 100) / 100, unit: ingredient.quantity.unit } : null;
-    if (available + 0.00001 >= needed.amount) return { ingredient, have, buy: null };
+    let toReserve = needed.amount;
+    for (const entry of trusted) {
+      const reserved = Math.min(toReserve, entry.amount.amount * remaining[entry.index]);
+      remaining[entry.index] = Math.max(0, remaining[entry.index] - reserved / entry.amount.amount);
+      toReserve = Math.max(0, toReserve - reserved);
+    }
+    if (available + 0.00001 >= needed.amount) { plans[index] = { ingredient, have, buy: null }; continue; }
     const fraction = Math.max(0, (needed.amount - available) / needed.amount);
     const shortage = ingredient.quantity.amount * fraction;
     const amount = ingredient.quantity.unit === 'each' ? Math.max(1, Math.ceil(shortage)) : Math.max(.01, Math.ceil(shortage * 100) / 100);
-    const check = doubtful.length ? `You may have ${doubtful.map(item => item.name.toLowerCase()).join(', ')}, but it was ${freshness(doubtful[0], now!).reason}. Remove it if you still have enough.` : undefined;
-    return { ingredient, have, buy: { ...ingredient.quantity, amount }, check };
-  });
+    const check = doubtful.length ? `You may have ${doubtful.map(({ item }) => item.name.toLowerCase()).join(', ')}, but it was ${freshness(doubtful[0].item, now!).reason}. Remove it if you still have enough.` : undefined;
+    plans[index] = { ingredient, have, buy: { ...ingredient.quantity, amount }, check };
+  }
+  return plans;
 }
 
 export function missingIngredients(recipe: Recipe, inventory: InventoryItem[], now?: string): Ingredient[] {
