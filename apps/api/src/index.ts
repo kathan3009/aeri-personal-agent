@@ -12,6 +12,8 @@ if (!process.env.APP_ACCESS_TOKEN) {
   process.exit(1);
 }
 const store = createStore();
-serve({ fetch: createApp(store).fetch, port, hostname: host }, info => {
+const app = createApp(store);
+await app.service.recoverInterrupted();
+serve({ fetch: app.fetch, port, hostname: host }, info => {
   console.log(`Aeri API ready at http://${host}:${info.port}`);
 });

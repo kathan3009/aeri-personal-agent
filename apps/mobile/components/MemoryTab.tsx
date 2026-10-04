@@ -1,68 +1,33 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Check, Plus } from 'lucide-react-native';
-import type { InventoryItem, Observation, Scan, Unit } from '@personal-agent/core';
+import { Plus } from 'lucide-react-native';
+import { formatTimestamp, freshness, type InventoryItem, type Unit } from '@personal-agent/core';
 import { useApp } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
 import { haptic } from '../lib/haptics';
 import { useNav } from '../lib/nav';
 import { c, quantity, radius, t, titleCase } from '../lib/theme';
 import { LargeHeader } from './Header';
-import { Pop, Reveal } from './motion';
-import { Button, Dot, Field, Group, Row, SectionHeader, Sheet, Tag } from './ui';
+import { MapCard } from './MapReview';
+import { Button, Field, Group, Row, SectionHeader, Sheet } from './ui';
 
-const certainty = (confidence: number) => confidence >= 0.85 ? 'Clearly seen' : confidence >= 0.6 ? 'Probably' : 'Not sure';
 const units: Array<{ unit: Unit; label: string }> = [{ unit: 'each', label: 'Count' }, { unit: 'g', label: 'g' }, { unit: 'kg', label: 'kg' }, { unit: 'ml', label: 'ml' }, { unit: 'l', label: 'L' }, { unit: 'cup', label: 'cups' }];
+const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+/** Where a remembered fact came from, in plain words. */
+function provenance(item: InventoryItem) {
+  const ref = item.evidence[0];
+  const when = day(item.lastConfirmedAt ?? item.updatedAt);
+  if (!ref) return `Confirmed ${when}`;
+  return { video: `Confirmed from your video${ref.atSec !== undefined ? ` at ${formatTimestamp(ref.atSec)}` : ''}, ${when}`, voice: `You said it, ${when}`, chat: `You told Aeri, ${when}`, manual: `Entered ${when}`, order: `Arrived in an order, ${when}`, photo: `From a photo, ${when}` }[ref.sourceType];
+}
 const preferenceIdeas = [
   { key: 'clothing sizes', hint: 'Shirt M, shoes 9' },
+  { key: 'location', hint: 'ZIP code, for nearby stores' },
   { key: 'favorite stores', hint: 'Where you like to shop' },
   { key: 'allergies', hint: 'Anything Aeri must never buy' },
   { key: 'weekly budget', hint: 'A limit for groceries' },
   { key: 'things to avoid', hint: 'Brands or ingredients' },
 ];
-
-function Review({ scan }: { scan: Scan }) {
-  const { request, refresh } = useApp();
-  const { toast } = useFeedback();
-  const [picked, setPicked] = useState<Record<string, boolean>>({});
-  const [saving, setSaving] = useState(false);
-  const count = scan.observations.filter(o => picked[o.id]).length;
-  const toggle = (item: Observation) => { haptic.tap(); setPicked(current => ({ ...current, [item.id]: !current[item.id] })); };
-  const save = async () => {
-    const decisions = Object.fromEntries(scan.observations.map(o => [o.id, picked[o.id] ? 'accepted' : 'rejected']));
-    try {
-      setSaving(true);
-      await request(`/v1/scans/${scan.id}/confirm`, { method: 'POST', body: JSON.stringify({ decisions }) });
-      await refresh(); haptic.success();
-      toast(count ? `Added ${count} ${count === 1 ? 'item' : 'items'} to your kitchen` : 'Nothing saved from that video', count ? 'success' : 'info');
-    } catch (error) { toast((error as Error).message, 'error'); }
-    finally { setSaving(false); }
-  };
-  return <Reveal from="scale" style={styles.review}>
-    <View style={styles.reviewTop}>
-      <Dot size={9} />
-      <Text style={[t.headline, { flex: 1 }]} accessibilityRole="header">Check what I saw</Text>
-      {scan.source === 'demo' && <Tag label="Sample" tone="sample" />}
-    </View>
-    <Text style={[t.footnote, { marginTop: 4, marginBottom: 6 }]}>{scan.source === 'demo'
-      ? 'Video understanding isn’t connected, so these are sample items, not from your video. Check only what is really in your kitchen.'
-      : 'Only the items you check are remembered.'}</Text>
-    {!scan.observations.length && <Text style={[t.subhead, { paddingVertical: 12 }]}>I couldn't make out any groceries in that video.</Text>}
-    {scan.observations.map(item => {
-      const on = !!picked[item.id];
-      return <Pressable key={item.id} onPress={() => toggle(item)} style={({ pressed }) => [styles.observation, pressed && { backgroundColor: c.fill }]}
-        accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={`${item.name}, ${item.quantity ? quantity(item.quantity) : 'amount unclear'}, ${certainty(item.confidence)}`}>
-        <Pop on={on}><View style={[styles.check, on && styles.checkOn]}>{on && <Check size={14} color={c.white} strokeWidth={3} />}</View></Pop>
-        <View style={{ flex: 1 }}>
-          <Text style={t.callout}>{titleCase(item.name)}</Text>
-          <Text style={t.footnote}>{certainty(item.confidence)}</Text>
-        </View>
-        <Text style={[t.number, { fontSize: 15, color: item.quantity ? c.ink : c.ink3 }]}>{item.quantity ? quantity(item.quantity) : 'Amount unclear'}</Text>
-      </Pressable>;
-    })}
-    <Button label={count ? `Remember ${count} ${count === 1 ? 'item' : 'items'}` : scan.observations.length ? 'None of these' : 'Dismiss'} tone={count ? 'primary' : 'secondary'} loading={saving} onPress={() => void save()} style={{ marginTop: 12 }} />
-  </Reveal>;
-}
 
 function ItemSheet({ item, onClose }: { item: InventoryItem | 'new' | null; onClose: () => void }) {
   const { request, refresh } = useApp();
@@ -71,13 +36,20 @@ function ItemSheet({ item, onClose }: { item: InventoryItem | 'new' | null; onCl
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [unit, setUnit] = useState<Unit>('each');
+  const [brand, setBrand] = useState('');
+  const [place, setPlace] = useState('');
   const [busy, setBusy] = useState(false);
   const [opened, setOpened] = useState<typeof item>(null);
-  if (item !== opened) { setOpened(item); setName(existing ? titleCase(existing.name) : ''); setValue(existing ? String(existing.quantity.amount) : ''); setUnit(existing?.quantity.unit ?? 'each'); }
+  if (item !== opened) { setOpened(item); setName(existing ? titleCase(existing.name) : ''); setValue(existing ? String(existing.quantity.amount) : ''); setUnit(existing?.quantity.unit ?? 'each'); setBrand(existing?.brand ?? ''); setPlace(existing?.location ?? ''); }
   const amount = Number(value.replace(',', '.'));
   const valid = name.trim().length > 0 && Number.isFinite(amount) && amount > 0;
   const save = async () => {
-    try { setBusy(true); await request('/v1/inventory', { method: 'POST', body: JSON.stringify({ name: existing?.name ?? name.trim(), amount, unit }) }); await refresh(); haptic.success(); onClose(); }
+    try {
+      setBusy(true);
+      if (existing) await request(`/v1/inventory/${existing.id}`, { method: 'PATCH', body: JSON.stringify({ amount, unit, brand: brand.trim(), location: place.trim() }) });
+      else await request('/v1/inventory', { method: 'POST', body: JSON.stringify({ name: name.trim(), amount, unit, ...(place.trim() ? { place: place.trim() } : {}) }) });
+      await refresh(); haptic.success(); onClose();
+    }
     catch (error) { toast((error as Error).message, 'error'); }
     finally { setBusy(false); }
   };
@@ -87,11 +59,14 @@ function ItemSheet({ item, onClose }: { item: InventoryItem | 'new' | null; onCl
     catch (error) { toast((error as Error).message, 'error'); }
     finally { setBusy(false); }
   };
-  return <Sheet visible={!!item} onClose={onClose} title={existing ? titleCase(existing.name) : 'Add to your kitchen'} message={existing ? 'Correct the amount Aeri remembers.' : 'Aeri uses this when planning what to buy.'}>
+  return <Sheet visible={!!item} onClose={onClose} title={existing ? titleCase(existing.name) : 'Add something you have'} message={existing ? 'Correct what Aeri remembers.' : 'Aeri uses this when planning what to buy.'}>
     <Group style={styles.sheetGroup}>
       {!existing && <Field label="Item" value={name} onChangeText={setName} placeholder="Eggs, rice, olive oil…" autoFocus autoCapitalize="sentences" />}
       <Field label="Amount" value={value} onChangeText={setValue} placeholder="6" keyboardType="decimal-pad" autoFocus={!!existing} />
+      {existing && <Field label="Brand" value={brand} onChangeText={setBrand} placeholder="Optional" />}
+      <Field label="Where it's kept" value={place} onChangeText={setPlace} placeholder="Fridge, pantry, closet…" />
     </Group>
+    {existing && <Text style={[t.footnote, { marginTop: 10, marginLeft: 4 }]}>{provenance(existing)}</Text>}
     <View style={styles.units} accessibilityRole="radiogroup" accessibilityLabel="Unit">
       {units.map(option => <Pressable key={option.unit} onPress={() => { haptic.tap(); setUnit(option.unit); }} style={[styles.unit, unit === option.unit && styles.unitOn]} accessibilityRole="radio" accessibilityState={{ selected: unit === option.unit }}>
         <Text style={[t.subhead, { color: unit === option.unit ? c.white : c.ink, fontWeight: '600' }]}>{option.label}</Text>
@@ -137,19 +112,31 @@ export function MemoryTab() {
   const { bottomInset } = useNav();
   const [item, setItem] = useState<InventoryItem | 'new' | null>(null);
   const [preference, setPreference] = useState<{ key: string; value: string; fixed: boolean } | null>(null);
-  const scan = state?.scans.find(s => s.status === 'needs_review');
+  const maps = (state?.scans ?? []).filter(s => s.status === 'needs_review' || s.status === 'processing' || s.status === 'failed').slice(0, 2);
+  const now = new Date().toISOString();
   const inventory = [...(state?.inventory ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  const places = [...new Set(inventory.map(i => i.location ?? ''))].sort((a, b) => (a ? 0 : 1) - (b ? 0 : 1) || a.localeCompare(b));
   const preferences = Object.entries(state?.preferences ?? {});
   return <>
     <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + 24 }]} showsVerticalScrollIndicator={false} automaticallyAdjustKeyboardInsets>
-      <LargeHeader title="Memory" subtitle="What Aeri knows about your home." />
-      {scan && <Review key={scan.id} scan={scan} />}
-      <SectionHeader title="Kitchen" action="Add" actionLabel="Add a kitchen item" onAction={() => setItem('new')} />
-      <Group>
-        {inventory.length === 0 && <Row title="Nothing remembered yet" subtitle={'Tell Aeri “I have 6 eggs” or show it your kitchen.'} tone="muted" />}
-        {inventory.map(entry => <Row key={entry.id} title={titleCase(entry.name)} subtitle={entry.confidence === 'confirmed' ? undefined : 'Not confirmed'} onPress={() => setItem(entry)}
-          accessibilityLabel={`${entry.name}, ${quantity(entry.quantity)}. Edit`} right={<Text style={[t.number, { fontSize: 17 }]}>{quantity(entry.quantity)}</Text>} />)}
-      </Group>
+      <LargeHeader title="Memory" subtitle="Only what you’ve confirmed." />
+      {maps.map(scan => <MapCard key={scan.id} scan={scan} />)}
+      {inventory.length === 0 && <>
+        <SectionHeader title="Your home" action="Add" actionLabel="Add something you have" onAction={() => setItem('new')} />
+        <Group><Row title="Nothing remembered yet" subtitle={'Record a short video of a shelf, fridge or closet, or say “I have 6 eggs”.'} tone="muted" /></Group>
+      </>}
+      {places.map((place, index) => <View key={place || 'elsewhere'}>
+        <SectionHeader title={place || (places.length > 1 ? 'Elsewhere' : 'Your home')} action={index === 0 ? 'Add' : undefined} actionLabel="Add something you have" onAction={() => setItem('new')} />
+        <Group>
+          {inventory.filter(entry => (entry.location ?? '') === place).map(entry => {
+            const fresh = freshness(entry, now);
+            const detail = [entry.brand, entry.position, fresh.state === 'fresh' ? undefined : fresh.state === 'expired' ? `Past its date` : `Check again: ${fresh.reason}`].filter(Boolean).join(' · ');
+            return <Row key={entry.id} title={titleCase(entry.name)} subtitle={detail || undefined} onPress={() => setItem(entry)}
+              accessibilityLabel={`${entry.name}, ${quantity(entry.quantity)}${detail ? `, ${detail}` : ''}. Edit`}
+              right={<Text style={[t.number, { fontSize: 17, color: fresh.state === 'fresh' ? c.ink : '#875810' }]}>{quantity(entry.quantity)}</Text>} />;
+          })}
+        </Group>
+      </View>)}
       <SectionHeader title="Preferences" action={preferences.length ? 'Add' : undefined} actionLabel="Add a preference" onAction={() => setPreference({ key: '', value: '', fixed: false })} />
       <Group inset={preferences.length ? 16 : 54}>
         {preferences.map(([key, value]) => key.startsWith('note')
@@ -166,11 +153,6 @@ export function MemoryTab() {
 
 const styles = StyleSheet.create({
   content: { paddingHorizontal: 20 },
-  review: { marginTop: 24, backgroundColor: c.surface, borderRadius: radius.dock, padding: 16, borderWidth: 1, borderColor: 'rgba(224,145,31,0.28)' },
-  reviewTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  observation: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 4, borderRadius: radius.row, minHeight: 52 },
-  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 1.5, borderColor: c.ink3, alignItems: 'center', justifyContent: 'center' },
-  checkOn: { backgroundColor: c.leaf, borderColor: c.leaf },
   sheetGroup: { marginTop: 18, backgroundColor: c.canvas },
   units: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
   unit: { paddingHorizontal: 14, minHeight: 36, justifyContent: 'center', borderRadius: radius.pill, backgroundColor: c.canvas },

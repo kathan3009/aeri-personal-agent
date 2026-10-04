@@ -55,7 +55,7 @@ export const observationSchema = z.object({
 export type Observation = z.infer<typeof observationSchema>;
 
 /** Something the model saw but could not identify, e.g. "white tubs at the back of the second shelf". */
-export const unclearSchema = z.object({ id: z.string(), description: z.string(), placeId: z.string().optional(), atSec: z.number().nonnegative().optional(), ask: z.string() });
+export const unclearSchema = z.object({ id: z.string(), description: z.string(), placeId: z.string().optional(), atSec: z.number().nonnegative().optional(), ask: z.string(), frame: z.string().optional() });
 export type Unclear = z.infer<typeof unclearSchema>;
 /** A confirmed item in a place this video covered that the video did not show. */
 export const unseenSchema = z.object({ inventoryId: z.string(), name: z.string(), placeId: z.string().optional(), previous: quantitySchema });

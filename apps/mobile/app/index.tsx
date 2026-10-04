@@ -59,15 +59,15 @@ function ConnectScreen() {
 }
 
 const capabilityRows = (p: Record<string, boolean> | null): Array<{ title: string; ready: boolean; detail: string }> => [
-  { title: 'Kitchen memory and lists', ready: true, detail: 'Ready' },
-  { title: 'Open conversation', ready: !!p?.aiGateway, detail: p?.aiGateway ? 'Ready, through Neon AI Gateway' : 'Simple commands only until Neon AI Gateway is connected' },
-  { title: 'Recipe videos', ready: !!p?.gemini, detail: p?.gemini ? 'Reads the actual video with Gemini' : 'Shows a sample recipe until Gemini is connected' },
-  { title: 'Kitchen videos', ready: !!p?.gemini, detail: p?.gemini ? 'Reads the actual video with Gemini' : 'Shows sample items until Gemini is connected' },
-  { title: 'In-app voice', ready: !!p?.gemini, detail: p?.gemini ? 'Ready' : 'Needs Gemini' },
-  { title: 'Store checkout', ready: !!p?.kernel, detail: p?.kernel ? 'Opens a private Kernel browser' : 'Opens the store’s site; you add the items' },
-  { title: 'Product links', ready: !!p?.exa, detail: p?.exa ? 'Ready, through Exa' : 'Needs Exa' },
-  { title: 'Receipts by email', ready: !!p?.agentMail, detail: p?.agentMail ? 'Ready, through AgentMail' : 'Needs AgentMail' },
-  { title: 'Storage', ready: true, detail: p?.neon ? 'Neon Postgres' : 'On the computer running Aeri' },
+  { title: 'Memory, lists and approvals', ready: true, detail: p?.neon ? 'Saved in Neon Postgres' : 'Saved on the computer running Aeri' },
+  { title: 'Video maps of your home', ready: !!p?.vision, detail: p?.vision ? `Reads your video with Gemini${p?.frames ? ', with the frames it saw' : ''}` : 'Shows a sample map until Gemini is connected' },
+  { title: 'Recipe videos', ready: !!p?.vision, detail: p?.vision ? 'Reads YouTube links and video files' : 'Shows a sample recipe until Gemini is connected' },
+  { title: 'Find from a photo', ready: !!p?.vision && !!p?.exa, detail: p?.vision ? (p?.exa ? 'Reads the photo, searches stores with Exa' : 'Reads the photo; store results are samples') : 'Sample product until Gemini is connected' },
+  { title: 'Store prices and stock', ready: !!p?.exa && !!p?.kernel, detail: p?.exa && p?.kernel ? 'Checks each store’s own page with Kernel' : 'Sample stores until Exa and Kernel are connected' },
+  { title: 'Store cart', ready: !!p?.kernel, detail: p?.kernel ? 'Private Kernel browser you can watch and take over' : 'Opens the store’s site; you add the items' },
+  { title: 'Open conversation', ready: !!p?.aiGateway, detail: p?.aiGateway ? 'Through Neon AI Gateway' : 'Simple commands until Neon AI Gateway is connected' },
+  { title: 'Talk with Aeri', ready: !!p?.voice, detail: p?.voice ? 'Ready' : 'Needs Gemini; keyboard dictation works now' },
+  { title: 'Receipts by email', ready: !!p?.agentMail, detail: p?.agentMail ? 'Through AgentMail' : 'Needs AgentMail and a public server' },
 ];
 
 function SettingsSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {

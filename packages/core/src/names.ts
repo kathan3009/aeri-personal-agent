@@ -17,3 +17,16 @@ export function nameOverlap(a: string, b: string): number {
   let shared = 0; for (const w of x) if (y.has(w)) shared++;
   return shared / Math.min(x.size, y.size);
 }
+
+// Specific products that satisfy a generic recipe ingredient. Only one direction: "pasta" is covered by spaghetti,
+// but a recipe asking for spaghetti is not covered by penne.
+const kinds: Record<string, string[]> = {
+  pasta: ['spaghetti', 'penne', 'rigatoni', 'linguine', 'fusilli', 'fettuccine', 'macaroni', 'farfalle', 'orzo', 'pasta'],
+  rice: ['basmati rice', 'jasmine rice', 'brown rice', 'white rice', 'rice'],
+  chickpea: ['garbanzo bean', 'chickpea'], cream: ['heavy cream', 'whipping cream', 'cream'], oil: ['olive oil', 'vegetable oil', 'canola oil'],
+};
+/** Does an item in memory (`have`) satisfy an ingredient a recipe asks for (`want`)? */
+export function covers(have: string, want: string): boolean {
+  const h = normalizeName(have), w = normalizeName(want);
+  return h === w || (kinds[w]?.some(kind => normalizeName(kind) === h) ?? false);
+}

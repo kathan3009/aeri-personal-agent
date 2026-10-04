@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View, type TextInput } from 'react-native';
+import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type TextInput } from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder, useAudioRecorderState } from 'expo-audio';
 import * as Speech from 'expo-speech';
 import { ActionBarPrimitive, AuiIf, AssistantRuntimeProvider, ComposerPrimitive, ErrorPrimitive, MessagePrimitive, ThreadPrimitive, useAui, useAuiState, useLocalRuntime, type ChatModelAdapter, type ThreadMessageLike } from '@assistant-ui/react-native';
-import { ArrowUp, ChevronRight, CircleAlert, Clapperboard, Film, Link2, Mic, PenLine, Plus, Square, Volume2, Video } from 'lucide-react-native';
+import { ArrowUp, Camera, ChevronRight, CircleAlert, Clapperboard, FileVideo, Film, Image as ImageIcon, Link2, Mic, Plus, ScanSearch, Square, Volume2, Video } from 'lucide-react-native';
 import { useApp } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
 import { haptic } from '../lib/haptics';
@@ -13,14 +14,17 @@ import { pendingFor } from '../lib/pending';
 import { c, greetingFor, host, lift, radius, t } from '../lib/theme';
 import { OfflineNotice, SettingsButton } from './Header';
 import { introDelay, Pop, Reveal, RevealWords, Shimmer } from './motion';
-import { Aura, Button, Dot, Field, Glass, Group, noWebOutline, Row, Sheet } from './ui';
+import { ActionList, Aura, Button, Dot, Field, Glass, Group, noWebOutline, Row, Sheet } from './ui';
 
 // Messages created after this point animate in; restored history appears still.
 const openedAt = Date.now();
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type Work = null | 'scan' | 'voice';
+type Work = null | 'scan' | 'voice' | 'photo';
+type Picked = { uri: string; mimeType: string; name?: string; source: 'recorded' | 'library' | 'file' };
 const youtube = (value: string) => { try { const url = new URL(value.trim()); return /(^|\.)youtube\.com$|(^|\.)youtu\.be$/.test(url.hostname) ? url.toString() : null; } catch { return null; } };
+const social = (value: string) => { try { const host = new URL(value.trim()).hostname.replace(/^www\./, ''); return /(^|\.)(instagram\.com|tiktok\.com|facebook\.com|fb\.watch|x\.com|twitter\.com|threads\.net|snapchat\.com|pinterest\.com|pin\.it)$/.test(host) ? host : null; } catch { return null; } };
+const videoFile = (value: string) => { try { const url = new URL(value.trim()); return url.protocol === 'https:' && /\.(mp4|mov|m4v|webm)$/i.test(url.pathname); } catch { return false; } };
 const toThread = (messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }>): ThreadMessageLike[] =>
   messages.map(m => ({ id: m.id, role: m.role, content: m.content, createdAt: new Date(m.createdAt) }));
 
@@ -65,16 +69,17 @@ function AssistantMessage({ running }: { running: boolean }) {
   </MessagePrimitive.Root>;
 }
 
-function Welcome({ onRecipe, onKitchen, onTell }: { onRecipe: () => void; onKitchen: () => void; onTell: () => void }) {
+function Welcome({ onShow, onPhoto, onRecipe, voice }: { onShow: () => void; onPhoto: () => void; onRecipe: () => void; voice: boolean }) {
   const start = useRef(introDelay()).current;
   return <View style={styles.welcome}>
     <RevealWords text={greetingFor()} style={t.largeTitle} delay={start} />
     <Reveal delay={start + 220}><Text style={[t.title3, { color: c.ink2, fontWeight: '400', marginTop: 4 }]}>What can I take care of?</Text></Reveal>
     <Group style={{ marginTop: 28 }} inset={62}>
-      <Reveal delay={start + 380}><Row title="Shop for a recipe video" subtitle="Paste a YouTube link. I'll list only what you're missing." onPress={onRecipe} chevron left={<View style={styles.rowIcon}><Clapperboard size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
-      <Reveal delay={start + 460}><Row title="Show me your kitchen" subtitle="Record a short video. You confirm what I see." onPress={onKitchen} chevron left={<View style={styles.rowIcon}><Video size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
-      <Reveal delay={start + 540}><Row title="Tell me what you have" subtitle={'“I have 6 eggs” or “my shirt size is M”'} onPress={onTell} chevron left={<View style={styles.rowIcon}><PenLine size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
+      <Reveal delay={start + 380}><Row title="Show me a shelf, fridge or closet" subtitle="Film 20 to 40 seconds. I'll map what's there; you confirm." onPress={onShow} chevron left={<View style={styles.rowIcon}><Video size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
+      <Reveal delay={start + 460}><Row title="Find something from a photo" subtitle="Snap it, say what you want. I'll compare stores." onPress={onPhoto} chevron left={<View style={styles.rowIcon}><ScanSearch size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
+      <Reveal delay={start + 540}><Row title="Shop for a recipe video" subtitle="Paste a YouTube link. I'll list only what you're missing." onPress={onRecipe} chevron left={<View style={styles.rowIcon}><Clapperboard size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
     </Group>
+    <Reveal delay={start + 640}><Text style={[t.footnote, styles.hint]}>{voice ? 'Or tap the microphone and just tell me: “we’re out of milk”, “where’s the olive oil?”' : 'Or just type: “I have 6 eggs”, “where’s the olive oil?”'}</Text></Reveal>
   </View>;
 }
 
@@ -84,7 +89,7 @@ function Dock() {
   const pending = useMemo(() => pendingFor(state), [state]);
   if (!pending.length || keyboard) return null;
   const [first] = pending;
-  const quiet = first.title.startsWith('Waiting');
+  const quiet = !!first.quiet;
   return <Reveal key={first.key + first.title} distance={22}><Pressable onPress={() => { haptic.tap(); go(first.tab); }} style={({ pressed }) => [styles.dockWrap, pressed && { transform: [{ scale: 0.985 }] }]}
     accessibilityRole="button" accessibilityLabel={`${first.title}. ${first.detail}.${pending.length > 1 ? ` ${pending.length - 1} more waiting.` : ''}`}>
     <Glass style={styles.dock}>
@@ -99,7 +104,7 @@ function Dock() {
   </Pressable></Reveal>;
 }
 
-function Conversation({ work, linkOpen, setLinkOpen, onAttach, onScan, onVoice }: { work: Work; linkOpen: boolean; setLinkOpen: (open: boolean) => void; onAttach: () => void; onScan: () => void; onVoice: () => void }) {
+function Conversation({ work, linkOpen, setLinkOpen, onAttach, onScan, onPhoto, onVoice, voice }: { work: Work; linkOpen: boolean; setLinkOpen: (open: boolean) => void; onAttach: () => void; onScan: () => void; onPhoto: () => void; onVoice: () => void; voice: boolean }) {
   const aui = useAui();
   const insets = useSafeAreaInsets();
   const { bottomInset, keyboard } = useNav();
@@ -108,12 +113,12 @@ function Conversation({ work, linkOpen, setLinkOpen, onAttach, onScan, onVoice }
   const input = useRef<TextInput>(null);
   const [link, setLink] = useState('');
   const mode = running || work ? 'thinking' : 'idle';
-  const status = work === 'scan' ? 'Looking at your video' : work === 'voice' ? 'Understanding your voice' : running ? 'Thinking' : null;
+  const status = work === 'scan' ? 'Sending your video' : work === 'photo' ? 'Sending your photo' : work === 'voice' ? 'Understanding your voice' : running ? 'Thinking' : null;
+  const linkOk = !!youtube(link) || videoFile(link);
   const sendLink = () => {
-    const url = youtube(link);
-    if (!url) return;
+    if (!linkOk) return;
     setLinkOpen(false); setLink('');
-    aui.composer.setText(url); aui.composer.send();
+    aui.composer.setText(link.trim()); aui.composer.send();
   };
   return <ThreadPrimitive.Root style={{ flex: 1 }}>
     <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
@@ -126,13 +131,13 @@ function Conversation({ work, linkOpen, setLinkOpen, onAttach, onScan, onVoice }
     </View>
     <View style={{ paddingHorizontal: 20 }}><OfflineNotice /></View>
     <ThreadPrimitive.MessagesFlatList autoScroll keyboardShouldPersistTaps="handled" contentContainerStyle={styles.messages} showsVerticalScrollIndicator={false}
-      ListHeaderComponent={<AuiIf condition={s => s.thread.isEmpty}><Welcome onRecipe={() => setLinkOpen(true)} onKitchen={onScan} onTell={() => { aui.composer.setText('I have '); input.current?.focus(); }} /></AuiIf>}>
+      ListHeaderComponent={<AuiIf condition={s => s.thread.isEmpty}><Welcome onShow={onScan} onPhoto={onPhoto} onRecipe={() => setLinkOpen(true)} voice={voice} /></AuiIf>}>
       {() => <Message />}
     </ThreadPrimitive.MessagesFlatList>
     <Dock />
     <View style={[styles.composerWrap, { paddingBottom: keyboard ? 8 : bottomInset }]}>
       <ComposerPrimitive.Root style={[styles.composer, lift]}>
-        <Pressable onPress={() => { haptic.tap(); onAttach(); }} hitSlop={6} style={styles.plus} accessibilityRole="button" accessibilityLabel="Add a recipe link or kitchen video">
+        <Pressable onPress={() => { haptic.tap(); onAttach(); }} hitSlop={6} style={styles.plus} accessibilityRole="button" accessibilityLabel="Add a video, photo or link">
           <Plus size={20} color={c.accent} strokeWidth={2.2} />
         </Pressable>
         <ComposerPrimitive.Input {...({ ref: input } as object)} placeholder="Message Aeri" placeholderTextColor={c.ink3}
@@ -144,12 +149,12 @@ function Conversation({ work, linkOpen, setLinkOpen, onAttach, onScan, onVoice }
           : <Pop on={!empty} initial><ComposerPrimitive.Send style={[styles.trailing, styles.send]} accessibilityLabel="Send"><ArrowUp size={19} color={c.white} strokeWidth={2.4} /></ComposerPrimitive.Send></Pop>}
       </ComposerPrimitive.Root>
     </View>
-    <Sheet visible={linkOpen} onClose={() => setLinkOpen(false)} title="Shop for a recipe video" message="Paste a public YouTube link. I'll compare the recipe with your kitchen and list only what's missing. Nothing is bought without your OK.">
+    <Sheet visible={linkOpen} onClose={() => setLinkOpen(false)} title="Shop for a recipe video" message="Paste a public YouTube link or a direct video file link. I'll compare the recipe with what you have and list only what's missing. Nothing is bought without your OK.">
       <Group style={{ marginTop: 18, backgroundColor: c.canvas }}>
-        <Field label="YouTube link" value={link} onChangeText={setLink} placeholder="https://youtu.be/…" autoCapitalize="none" autoCorrect={false} keyboardType="url" autoFocus returnKeyType="go" onSubmitEditing={sendLink} />
+        <Field label="Video link" value={link} onChangeText={setLink} placeholder="https://youtu.be/…" autoCapitalize="none" autoCorrect={false} keyboardType="url" autoFocus returnKeyType="go" onSubmitEditing={sendLink} />
       </Group>
-      {!!link.trim() && !youtube(link) && <Text style={[t.footnote, { color: c.ember, marginTop: 8, marginLeft: 4 }]}>That doesn't look like a YouTube link yet.</Text>}
-      <Button label="Make a shopping list" onPress={sendLink} disabled={!youtube(link)} style={{ marginTop: 18 }} />
+      {!!link.trim() && !linkOk && <Text style={[t.footnote, { color: c.ember, marginTop: 8, marginLeft: 4 }]}>{social(link) ? `I can't open ${social(link)} videos from a link. Save the video to your phone, then choose it with +.` : "That doesn't look like a YouTube or video file link yet."}</Text>}
+      <Button label="Make a shopping list" onPress={sendLink} disabled={!linkOk} style={{ marginTop: 18 }} />
     </Sheet>
   </ThreadPrimitive.Root>;
 }
@@ -183,38 +188,94 @@ export function AgentTab() {
     },
   }), [request, refresh]);
   const runtime = useLocalRuntime(adapter, { initialMessages: initial.current });
+  // Slow work (a recipe video, a store check) answers later; show those replies when they arrive.
+  const serverCount = state?.messages.length ?? 0;
+  useEffect(() => {
+    const thread = runtime.thread.getState();
+    if (!state || thread.isRunning || serverCount <= thread.messages.length) return;
+    runtime.thread.reset(toThread(state.messages));
+  }, [serverCount, runtime, state]);
 
-  const processVideo = async (camera: boolean) => {
+  const [purposeFor, setPurposeFor] = useState<Picked | null>(null);
+  const [photo, setPhoto] = useState<{ uri: string; mimeType: string } | null>(null);
+  const [instruction, setInstruction] = useState('');
+  const vision = !!providers?.vision;
+  const pickVideo = async (from: Picked['source']): Promise<Picked | null> => {
+    if (from === 'recorded') {
+      if (!(await ImagePicker.requestCameraPermissionsAsync()).granted) { toast('Camera access is off. Turn it on in the Settings app to record.', 'error'); return null; }
+      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['videos'], videoMaxDuration: 45, videoQuality: ImagePicker.UIImagePickerControllerQualityType.Medium });
+      const asset = result.canceled ? null : result.assets[0];
+      return asset ? { uri: asset.uri, mimeType: asset.mimeType ?? 'video/quicktime', source: 'recorded' } : null;
+    }
+    if (from === 'file') {
+      const result = await DocumentPicker.getDocumentAsync({ type: ['video/*'], copyToCacheDirectory: true });
+      const asset = result.canceled ? null : result.assets[0];
+      return asset ? { uri: asset.uri, mimeType: asset.mimeType ?? 'video/mp4', name: asset.name, source: 'file' } : null;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'], videoMaxDuration: 180 });
+    const asset = result.canceled ? null : result.assets[0];
+    return asset ? { uri: asset.uri, mimeType: asset.mimeType ?? 'video/mp4', name: asset.fileName ?? undefined, source: 'library' } : null;
+  };
+  const sendVideo = async (video: Picked, purpose: 'household' | 'recipe') => {
     try {
-      if (camera && !(await ImagePicker.requestCameraPermissionsAsync()).granted) { toast('Camera access is off. Turn it on in the Settings app to record your kitchen.', 'error'); return; }
-      const result = camera ? await ImagePicker.launchCameraAsync({ mediaTypes: ['videos'], videoMaxDuration: 40, videoQuality: 0 })
-        : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'] });
-      const asset = !result.canceled ? result.assets[0] : null;
+      setWork('scan'); toast(purpose === 'recipe' ? 'Reading your recipe video…' : 'Mapping your video…', 'working');
+      await upload('/v1/scans', video.uri, 'video', video.mimeType, { purpose, source: video.source }, video.name);
+      await refresh(); haptic.success(); dismissToast();
+      go(purpose === 'recipe' ? 'tasks' : 'memory');
+    } catch (error) { dismissToast(); toast((error as Error).message, 'error'); }
+    finally { setWork(null); }
+  };
+  const startVideo = async (from: Picked['source']) => {
+    try {
+      const video = await pickVideo(from);
+      if (!video) return;
+      // A clip filmed in Aeri is a walkthrough; anything else might be a recipe, so ask once.
+      if (from === 'recorded') void sendVideo(video, 'household'); else setPurposeFor(video);
+    } catch (error) { toast((error as Error).message, 'error'); }
+  };
+  const startPhoto = async (camera: boolean) => {
+    try {
+      if (camera && !(await ImagePicker.requestCameraPermissionsAsync()).granted) { toast('Camera access is off. Turn it on in the Settings app to take a photo.', 'error'); return; }
+      const result = camera ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 }) : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
+      const asset = result.canceled ? null : result.assets[0];
       if (!asset) return;
-      setWork('scan'); toast('Looking at your video…', 'working');
-      const scan = await upload<{ observations: unknown[]; source: 'demo' | 'gemini' }>('/v1/scans', asset.uri, 'video', asset.mimeType ?? 'video/mp4');
-      await refresh();
-      const count = scan.observations.length;
-      haptic.success();
-      if (!count) toast("I couldn't make out any groceries. Try a slower pan in good light.", 'info');
-      else { toast(`${count} ${count === 1 ? 'thing' : 'things'} to check in Memory${scan.source === 'demo' ? ' (sample items)' : ''}`, 'success'); go('memory'); }
+      setInstruction(''); setPhoto({ uri: asset.uri, mimeType: asset.mimeType ?? 'image/jpeg' });
+    } catch (error) { toast((error as Error).message, 'error'); }
+  };
+  const sendPhoto = async () => {
+    if (!photo) return;
+    const picked = photo; setPhoto(null);
+    try {
+      setWork('photo'); toast('Looking at your photo…', 'working');
+      await upload('/v1/photos', picked.uri, 'image', picked.mimeType, { instruction: instruction.trim() });
+      await refresh(); haptic.success(); dismissToast(); go('tasks');
     } catch (error) { dismissToast(); toast((error as Error).message, 'error'); }
     finally { setWork(null); }
   };
   const onScan = () => ask({
-    title: 'Show me your kitchen',
-    message: providers?.gemini ? 'A slow, steady 20 to 40 second pan works best. You will confirm everything I think I see.' : 'Video understanding isn’t connected yet, so I’ll show sample items for you to confirm. Nothing is saved without your OK.',
+    title: 'Show me where things are',
+    message: vision ? 'Walk slowly past one fridge, pantry, shelf or closet for 20 to 40 seconds. Say anything that’s hard to see, like “two cartons of oat milk”. You confirm everything before I remember it.' : 'Video understanding isn’t connected yet, so I’ll show a sample map for you to try the review. Nothing is saved without your OK.',
     actions: [
-      ...(Platform.OS === 'web' ? [] : [{ label: 'Record a video', icon: Video, onPress: () => void processVideo(true) }]),
-      { label: 'Choose a video', icon: Film, onPress: () => void processVideo(false) },
+      ...(Platform.OS === 'web' ? [] : [{ label: 'Record a video', icon: Video, onPress: () => void startVideo('recorded') }]),
+      { label: 'Choose from your library', icon: Film, onPress: () => void startVideo('library') },
+      { label: 'Choose from Files', detail: 'Videos saved, AirDropped or downloaded', icon: FileVideo, onPress: () => void startVideo('file') },
+    ],
+  });
+  const onPhoto = () => ask({
+    title: 'Find something from a photo',
+    message: vision ? 'A clear shot of the label works best.' : 'Photo understanding isn’t connected yet, so you’ll see a sample product and sample stores.',
+    actions: [
+      ...(Platform.OS === 'web' ? [] : [{ label: 'Take a photo', icon: Camera, onPress: () => void startPhoto(true) }]),
+      { label: 'Choose a photo', icon: ImageIcon, onPress: () => void startPhoto(false) },
     ],
   });
   const onAttach = () => ask({
-    title: 'Add to the conversation',
+    title: 'Show Aeri something',
     actions: [
-      { label: 'Recipe video link', detail: 'Plan a shopping list from YouTube', icon: Clapperboard, onPress: () => setLinkOpen(true) },
-      ...(Platform.OS === 'web' ? [] : [{ label: 'Record your kitchen', detail: 'Update what you have', icon: Video, onPress: () => void processVideo(true) }]),
-      { label: 'Choose a kitchen video', detail: 'From your library', icon: Film, onPress: () => void processVideo(false) },
+      ...(Platform.OS === 'web' ? [] : [{ label: 'Record a video', detail: 'A shelf, fridge, pantry or closet', icon: Video, onPress: () => void startVideo('recorded') }]),
+      { label: 'Choose a video', detail: 'From your library or Files', icon: Film, onPress: () => void startVideo('library') },
+      { label: 'Find from a photo', detail: 'Same item, or something like it', icon: ScanSearch, onPress: onPhoto },
+      { label: 'Paste a recipe link', detail: 'YouTube or a video file', icon: Link2, onPress: () => setLinkOpen(true) },
     ],
   });
   const stopVoicePlayback = () => {
@@ -277,7 +338,7 @@ export function AgentTab() {
       }
       return;
     }
-    if (!providers?.gemini) { voiceBusy.current = null; setVoiceError('Voice needs a Gemini API key. You can still type to Aeri.'); return; }
+    if (!providers?.voice) { voiceBusy.current = null; setVoiceError('Voice needs a Gemini API key. You can type, or use your keyboard’s dictation.'); return; }
     setVoiceStarting(true);
     try {
       const permission = await AudioModule.requestRecordingPermissionsAsync();
@@ -301,9 +362,23 @@ export function AgentTab() {
     }
   };
   return <AssistantRuntimeProvider runtime={runtime}>
-    <Conversation work={work} linkOpen={linkOpen} setLinkOpen={setLinkOpen} onAttach={onAttach} onScan={onScan} onVoice={() => {
-      voiceSession.current += 1; setVoiceResult(null); setVoiceError(providers?.gemini ? null : 'Voice needs a Gemini API key. You can still type to Aeri.'); setVoiceOpen(true);
+    <Conversation work={work} linkOpen={linkOpen} setLinkOpen={setLinkOpen} onAttach={onAttach} onScan={onScan} onPhoto={onPhoto} voice={!!providers?.voice} onVoice={() => {
+      voiceSession.current += 1; setVoiceResult(null); setVoiceError(providers?.voice ? null : 'Voice needs a Gemini API key. You can type, or use your keyboard’s dictation.'); setVoiceOpen(true);
     }} />
+    <Sheet visible={!!purposeFor} onClose={() => setPurposeFor(null)} title="What’s in this video?" message="I read the two kinds differently.">
+      {purposeFor && <ActionList onDone={() => setPurposeFor(null)} actions={[
+        { label: 'Where things are at home', detail: 'Fridge, pantry, shelf or closet', icon: Video, onPress: () => void sendVideo(purposeFor, 'household') },
+        { label: 'A recipe to cook', detail: 'I’ll list what you’re missing', icon: Clapperboard, onPress: () => void sendVideo(purposeFor, 'recipe') },
+      ]} />}
+    </Sheet>
+    <Sheet visible={!!photo} onClose={() => setPhoto(null)} title="What do you want?" message="Say it however you like. I’ll also use your saved sizes, brands and stores.">
+      {photo && <Image source={{ uri: photo.uri }} style={styles.photo} accessibilityLabel="Your photo" />}
+      <Group style={{ marginTop: 14, backgroundColor: c.canvas }}>
+        <Field label="Instruction (optional)" value={instruction} onChangeText={setInstruction} placeholder="Same brand, smallest size, under $20" returnKeyType="go" onSubmitEditing={() => void sendPhoto()} />
+      </Group>
+      <View style={styles.ideas}>{['Same brand', 'Cheapest nearby', 'Something like this'].map(idea => <Pressable key={idea} onPress={() => { haptic.tap(); setInstruction(idea); }} style={styles.idea}><Text style={[t.subhead, { color: c.accent, fontWeight: '600' }]}>{idea}</Text></Pressable>)}</View>
+      <Button label="Find it" icon={ScanSearch} onPress={() => void sendPhoto()} style={{ marginTop: 16 }} />
+    </Sheet>
     <Sheet visible={voiceOpen} onClose={closeVoice} title="Talk with Aeri" message="Tell me what you have, what you need, or what you want to remember.">
       <View style={styles.voiceCenter}>
         <Aura size={88} mode={recording ? 'listening' : work === 'voice' ? 'thinking' : voiceSpeaking ? 'speaking' : 'idle'} />
@@ -316,7 +391,7 @@ export function AgentTab() {
           <Text style={[t.callout, { color: c.ink, marginTop: 4 }]}>{voiceResult.reply}</Text>
         </ScrollView>}
       </View>
-      <Button label={recording ? 'Finish speaking' : 'Start talking'} icon={recording ? Square : Mic} onPress={() => void onVoice()} loading={work === 'voice' || voiceStarting} disabled={work === 'voice' || voiceStarting || !providers?.gemini} accessibilityHint={recording ? 'Sends this voice turn to Aeri' : 'Records one voice turn'} />
+      <Button label={recording ? 'Finish speaking' : 'Start talking'} icon={recording ? Square : Mic} onPress={() => void onVoice()} loading={work === 'voice' || voiceStarting} disabled={work === 'voice' || voiceStarting || !providers?.voice} accessibilityHint={recording ? 'Sends this voice turn to Aeri' : 'Records one voice turn'} />
       {voiceResult && <Button label={voiceSpeaking ? 'Stop voice' : 'Play reply'} icon={Volume2} tone="plain" onPress={() => voiceSpeaking ? void stopVoicePlayback() : void speak(voiceResult.reply)} style={{ marginTop: 6 }} />}
       <Button label="Done" tone="plain" onPress={closeVoice} style={{ marginTop: 2 }} />
     </Sheet>
@@ -327,6 +402,10 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingBottom: 8 },
   messages: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 16, flexGrow: 1 },
   welcome: { paddingTop: 36, paddingBottom: 12 },
+  hint: { marginTop: 16, marginHorizontal: 6, textAlign: 'center', color: c.ink3 },
+  photo: { width: '100%', height: 180, borderRadius: radius.group, marginTop: 16, backgroundColor: c.tint },
+  ideas: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+  idea: { paddingHorizontal: 12, minHeight: 34, justifyContent: 'center', borderRadius: radius.pill, backgroundColor: c.tint },
   rowIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.tint, alignItems: 'center', justifyContent: 'center' },
   userWrap: { alignSelf: 'flex-end', maxWidth: '82%' },
   userBubble: { backgroundColor: c.surface, borderRadius: 20, borderBottomRightRadius: 6, paddingHorizontal: 15, paddingVertical: 10, marginTop: 18 },

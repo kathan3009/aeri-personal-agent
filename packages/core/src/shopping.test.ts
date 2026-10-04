@@ -63,6 +63,17 @@ describe('basket comparison', () => {
   });
 });
 
+describe('owned items cover generic ingredients', () => {
+  it('counts a box of spaghetti with a legible size toward a recipe asking for pasta by weight', () => {
+    const recipe = (name: string, grams: number): Recipe => ({ id: 'r', title: 'Pasta', servings: 2, source: 'manual', createdAt: at, instructions: [], ingredients: [{ name, quantity: { amount: grams, unit: 'g' }, optional: false }] });
+    const box = { id: 's', name: 'Spaghetti', size: '16 oz', quantity: { amount: 1, unit: 'each' as const }, confidence: 'confirmed' as const, updatedAt: at, evidence: [] };
+    expect(createCart(recipe('Pasta', 250), [box], at, id).items).toEqual([]);
+    expect(createCart(recipe('Spaghetti', 600), [box], at, id).items.map(i => [i.name, i.quantity.amount])).toEqual([['Spaghetti', 146.41]]);
+    expect(createCart(recipe('Spaghetti', 250), [{ ...box, name: 'Penne' }], at, id).items).toHaveLength(1);
+    expect(createCart(recipe('Pasta', 250), [{ ...box, size: undefined }], at, id).items).toHaveLength(1); // a count with no size can't cover grams
+  });
+});
+
 describe('stale memory', () => {
   it('keeps an ingredient on the list with a note when the pantry count is stale', () => {
     const recipe: Recipe = { id: 'r', title: 'Latte', servings: 1, source: 'manual', createdAt: at, instructions: [], ingredients: [{ name: 'Milk', quantity: { amount: 250, unit: 'ml' }, optional: false }, { name: 'Coffee', quantity: { amount: 20, unit: 'g' }, optional: false }] };

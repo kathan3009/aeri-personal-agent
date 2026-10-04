@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { freshness, inventoryItemSchema, type InventoryItem } from './inventory';
-import { normalizeName } from './names';
+import { covers } from './names';
 import { candidateSchema, photoSearchSchema, verificationSchema } from './product';
 import { proposalSchema } from './shopping';
-import { quantitySchema, toBase, type Quantity } from './units';
+import { parsePackSize, quantitySchema, toBase, type Quantity } from './units';
 import { scanSchema } from './video';
 
 export * from './units';
@@ -90,11 +90,13 @@ export type IngredientPlan = { ingredient: Ingredient; have: Quantity | null; bu
 export function planIngredients(recipe: Recipe, inventory: InventoryItem[], now?: string): IngredientPlan[] {
   return recipe.ingredients.filter(i => !i.optional).map(ingredient => {
     const needed = toBase(ingredient.quantity);
-    const matching = inventory.filter(item => item.confidence === 'confirmed' && normalizeName(item.name) === normalizeName(ingredient.name) && toBase(item.quantity).dimension === needed.dimension);
+    // A counted package with a legible pack size ("1 box, 16 oz") also counts by weight or volume.
+    const amountOf = (item: InventoryItem): Quantity => { const pack = item.quantity.unit === 'each' && needed.dimension !== 'count' ? parsePackSize(item.size) : null; return pack ? { amount: pack.amount * item.quantity.amount, unit: pack.unit } : item.quantity; };
+    const matching = inventory.filter(item => item.confidence === 'confirmed' && covers(item.name, ingredient.name) && toBase(amountOf(item)).dimension === needed.dimension);
     const trusted = now ? matching.filter(item => freshness(item, now).state === 'fresh') : matching;
     const doubtful = now ? matching.filter(item => freshness(item, now).state !== 'fresh') : [];
-    const available = trusted.reduce((total, item) => total + toBase(item.quantity).amount, 0);
-    const haveAll = matching.reduce((total, item) => total + toBase(item.quantity).amount, 0);
+    const available = trusted.reduce((total, item) => total + toBase(amountOf(item)).amount, 0);
+    const haveAll = matching.reduce((total, item) => total + toBase(amountOf(item)).amount, 0);
     const have = matching.length ? { amount: Math.round(haveAll / (needed.amount / ingredient.quantity.amount) * 100) / 100, unit: ingredient.quantity.unit } : null;
     if (available + 0.00001 >= needed.amount) return { ingredient, have, buy: null };
     const fraction = Math.max(0, (needed.amount - available) / needed.amount);

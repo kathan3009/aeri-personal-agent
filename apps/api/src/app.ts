@@ -76,6 +76,7 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
     const body = z.object({ decisions: z.record(z.string(), z.union([z.enum(['accepted', 'rejected']), correctionSchema])), unseen: z.record(z.string(), z.enum(['gone', 'keep'])).default({}) }).parse(await c.req.json());
     return c.json(await service.confirmKitchen(c.req.param('id'), body.decisions, body.unseen));
   });
+  app.post('/v1/scans/:id/dismiss', async c => { await service.dismissScan(c.req.param('id')); return c.json({ ok: true }); });
   app.get('/v1/scans/:id/frames/:name', async c => {
     const frame = await readFrame(c.req.param('id'), c.req.param('name'));
     if (!frame) return c.json({ error: 'Frame not found' }, 404);

@@ -40,6 +40,17 @@ export class AgentService {
     const job = work().catch(() => undefined).finally(() => this.jobs.delete(job));
     this.jobs.add(job);
   }
+  /** Work that was running when the server stopped can't finish; say so instead of spinning forever. */
+  async recoverInterrupted() {
+    await this.store.update(state => {
+      const note = 'Stopped when Aeri restarted. Please try again.';
+      for (const task of state.tasks) if (task.status === 'running') Object.assign(task, { status: 'failed', detail: note, updatedAt: now() });
+      for (const scan of state.scans) if (scan.status === 'processing') Object.assign(scan, { status: 'failed', error: note });
+      for (const search of state.photoSearches) if (search.status === 'searching') Object.assign(search, { status: 'failed', error: note, updatedAt: now() });
+      for (const proposal of state.proposals) if (proposal.status === 'searching') Object.assign(proposal, { status: 'failed', error: note });
+      for (const cart of state.carts) if (cart.checkout?.status === 'preparing') { cart.checkout.status = 'failed'; cart.checkout.note = note; cart.status = 'approved'; }
+    });
+  }
   /** Resolves when background work has finished. Used by tests and graceful shutdown. */
   async idle() { while (this.jobs.size) await Promise.all([...this.jobs]); }
   private async say(content: string) { await this.store.update(state => state.messages.push({ id: id(), role: 'assistant', content, createdAt: now() })); }
@@ -149,7 +160,12 @@ export class AgentService {
       let duration: number | undefined;
       let map;
       let frames: Record<string, string> = {};
-      if (!p) map = buildVideoMap(demoHouseholdMap(), id);
+      if (!p) {
+        map = buildVideoMap(demoHouseholdMap(), id);
+        // The sample map is not the person's clip; report only facts about the real upload.
+        if (!('youtube' in input)) duration = await withTempFile(input.data, extension(input.mimeType), probeDuration);
+        map.durationSec = undefined;
+      }
       else if ('youtube' in input) map = buildVideoMap(await perceiveHousehold(p, { kind: 'youtube', url: input.youtube }), id);
       else {
         const result = await withTempFile(input.data, extension(input.mimeType), async path => {
@@ -165,8 +181,9 @@ export class AgentService {
       return await this.store.update(state => {
         const scan = state.scans.find(s => s.id === scanId)!;
         const observations = map.observations.map(o => frames[o.id] ? { ...o, sightings: o.sightings.map((s, i) => i === 0 ? { ...s, frame: frames[o.id] } : s) } : o);
+        const unclear = map.unclear.map(u => frames[u.id] ? { ...u, frame: frames[u.id] } : u);
         const compared = reconcile(observations, map.places, state.inventory);
-        Object.assign(scan, { status: 'needs_review', observations: compared.observations, unseen: compared.unseen, places: map.places, unclear: map.unclear, summary: map.summary,
+        Object.assign(scan, { status: 'needs_review', observations: compared.observations, unseen: compared.unseen, places: map.places, unclear, summary: map.summary,
           video: { ...scan.video, durationSec: duration ?? map.durationSec ?? scan.video?.durationSec } });
         const task = state.tasks.find(t => t.id === taskId)!;
         const asks = map.unclear.length + map.observations.filter(o => o.closeUp).length;
@@ -200,6 +217,20 @@ export class AgentService {
       }
       return { touched, pending: scan.observations.filter(o => o.decision === 'pending').map(o => o.name) };
     });
+  }
+
+  /** Removes a map that failed or that the person doesn't want to review. Nothing was ever saved from it. */
+  async dismissScan(scanId: string) {
+    await this.store.update(state => {
+      const scan = state.scans.find(s => s.id === scanId);
+      if (!scan) throw new Error('Scan not found');
+      if (scan.status === 'confirmed') throw new Error('This video was already reviewed');
+      state.scans = state.scans.filter(s => s.id !== scanId);
+      closeTask(state, scanId);
+      for (const task of state.tasks) if (task.subjectId === scanId && task.status === 'failed') { task.status = 'done'; task.updatedAt = now(); }
+      event(state, 'scan.dismissed', { scanId });
+    });
+    await pruneFrames(scanId, new Set());
   }
 
   async confirmKitchen(scanId: string, decisions: Record<string, Decision>, unseen: Record<string, 'gone' | 'keep'> = {}) {
