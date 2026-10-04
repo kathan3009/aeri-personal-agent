@@ -2,7 +2,7 @@
 
 Aeri is a private iOS/Android personal shopping agent. It remembers confirmed kitchen items and preferences, turns a public YouTube recipe into a shopping plan, lets you approve a cart, and opens a retailer checkout. A kitchen video produces observations for review. Text, voice notes, and a paired phone number can update the same memory.
 
-The repository is a mobile app plus a private API. There is no consumer web app. The mobile interface uses the MIT-licensed native [assistant-ui](https://www.assistant-ui.com/docs/react-native) library with a restrained sky-blue React Native design.
+The repository is a mobile app plus a private API. There is no consumer web app. The mobile interface uses the MIT-licensed native [assistant-ui](https://www.assistant-ui.com/docs/react-native) library with a restrained sky-blue React Native design. Its bottom navigation uses native Liquid Glass on supported iPhones and a readable opaque surface elsewhere.
 
 ## Run now, without sponsor keys
 

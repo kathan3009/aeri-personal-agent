@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from 'expo-glass-effect';
 import { Bot, Brain, ListTodo, Settings2, Sparkles } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AgentTab } from '../components/AgentTab';
@@ -33,8 +34,13 @@ export default function Home() {
   const { settings, state, loading, error, disconnect, refresh, phoneNumber } = useApp();
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('agent');
+  const glass = Platform.OS === 'ios' && isGlassEffectAPIAvailable() && isLiquidGlassAvailable();
   if (loading) return <View style={[styles.root, { justifyContent: 'center' }]}><ActivityIndicator color={c.blue} /></View>;
   if (!settings) return <ConnectScreen />;
+  const navItems = ([['agent', Bot, 'Agent'], ['memory', Brain, 'Memory'], ['tasks', ListTodo, 'Tasks']] as const).map(([key, Icon, label]) => <Pressable key={key} onPress={() => { setTab(key); void refresh(); }} style={styles.navItem}>
+    <View style={[styles.navIcon, tab === key && styles.navActive]}><Icon size={21} color={tab === key ? c.blue : '#95AAB5'} strokeWidth={tab === key ? 2 : 1.7} /></View>
+    <Text style={[styles.navLabel, tab === key && styles.navLabelActive]}>{label}</Text>
+  </Pressable>);
   return <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.root}>
     <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
       <View style={styles.brandRow}><View style={styles.brandIcon}><Sparkles size={17} color={c.blue} strokeWidth={1.8} /></View><Text style={styles.brand}>aeri</Text></View>
@@ -46,12 +52,11 @@ export default function Home() {
       {tab === 'memory' && <MemoryTab />}
       {tab === 'tasks' && <TasksTab />}
     </View>
-    <View style={[styles.navWrap, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-      {([['agent', Bot, 'Agent'], ['memory', Brain, 'Memory'], ['tasks', ListTodo, 'Tasks']] as const).map(([key, Icon, label]) => <Pressable key={key} onPress={() => { setTab(key); void refresh(); }} style={styles.navItem}>
-        <View style={[styles.navIcon, tab === key && styles.navActive]}><Icon size={21} color={tab === key ? c.blue : '#95AAB5'} strokeWidth={tab === key ? 2 : 1.7} /></View>
-        <Text style={[styles.navLabel, tab === key && styles.navLabelActive]}>{label}</Text>
-      </Pressable>)}
-    </View>
+    {glass ? <GlassView glassEffectStyle="regular" tintColor="#E4F4FC" style={[styles.navWrap, styles.navGlass, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+      {navItems}
+    </GlassView> : <View style={[styles.navWrap, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+      {navItems}
+    </View>}
   </KeyboardAvoidingView>;
 }
 
@@ -62,6 +67,7 @@ const styles = StyleSheet.create({
   settings: { width: 38, height: 38, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   errorBanner: { backgroundColor: '#FCE8E6', paddingHorizontal: 22, paddingVertical: 8 }, errorText: { color: '#9D4E4C', fontSize: 12 },
   main: { flex: 1 }, navWrap: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,.96)', borderTopWidth: 1, borderTopColor: '#E8F0F4', paddingTop: 10, paddingHorizontal: 26 },
+  navGlass: { backgroundColor: 'transparent' },
   navItem: { flex: 1, alignItems: 'center', gap: 2 }, navIcon: { width: 47, height: 33, borderRadius: 17, alignItems: 'center', justifyContent: 'center' }, navActive: { backgroundColor: '#E3F4FB' },
   navLabel: { color: '#93A7B3', fontSize: 10, fontWeight: '600' }, navLabelActive: { color: c.blue },
   connect: { flex: 1, paddingHorizontal: 26 }, connectOrb: { width: 74, height: 74, borderRadius: 26, backgroundColor: 'rgba(255,255,255,.78)', alignItems: 'center', justifyContent: 'center', marginTop: 35, marginBottom: 28 },
