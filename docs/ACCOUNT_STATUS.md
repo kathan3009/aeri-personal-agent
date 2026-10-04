@@ -19,3 +19,8 @@ The stack page now exposes claim links for Neon, Exa, Fly.io, Kernel, and AgentM
 The API container and idle-stop `fly.template.toml` are prepared, but **no Fly deployment has been made**. Both Neon and Fly have an attached payment method; their posted credits do not by themselves prove that future usage cannot reach the card. Before deployment, verify any hard usage or billing control with those providers and choose a usage plan that stays within the credits. Neon AI Gateway credit is now posted, but the key/model connection and a live app request remain unverified. AgentMail's signed receipt webhook can be configured after a public HTTPS API URL exists.
 
 The API does not submit retailer payments. Kernel browser sessions are created only after a user approves a cart, and checkout remains with the user. The default retailer is Instacart; exact products, quantities, availability, and account login still need a live rehearsal.
+
+## Usage added by live tests on October 4 (afternoon)
+
+Development checks spent a small, unmeasured amount of Exa and Kernel credit; neither account has a card. That covered about 15 Exa searches and about 15 short Kernel browser sessions, all deleted, including one guest add-to-cart at Target with no checkout. No Gemini, Neon AI Gateway, Fly or AgentMail calls were made. Recheck the dashboards before relying on the balances above.
+

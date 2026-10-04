@@ -1,14 +1,37 @@
 # Aeri
 
-Aeri is a private, iOS-first personal shopping agent (Android is supported). It remembers confirmed kitchen items and preferences, turns a public YouTube recipe into a shopping plan, lets you approve a cart, and opens a retailer checkout. A kitchen video produces observations for review. Text and in-app voice conversation update the same memory.
+Aeri is a private, iOS-first personal shopping agent (Android is supported). Its main demo:
+1. You film a fridge, pantry, shelf or closet for 20–40 seconds.
+2. Aeri turns the clip into a timestamped map of places and visible items, with an evidence frame for each item.
+3. You confirm or correct each item before anything is remembered.
+4. Only the confirmed facts change the next shopping list.
 
-The repository is a mobile app plus a private API. There is no consumer web app. The conversation uses the MIT-licensed native [assistant-ui](https://www.assistant-ui.com/docs/react-native) library.
+It also turns a public YouTube recipe (or a recipe video file) into a missing-items list. It can find a product from a photo, labeling results as exact, likely or similar matches. It compares stores by all-in cost and prepares the chosen store's cart for you to review in the app. Aeri never pays, and never says an order exists without the store's order number.
 
-The interface is designed iPhone-first: SF Pro on Apple's text-style scale, SF Symbols for navigation, haptics, a light sky palette with one deep accent, and glass only on floating elements (native Liquid Glass on iOS 26, the system blur material on earlier iPhones, an opaque surface on Android). Every state has one primary action. Cart approval is a deliberate press-and-hold, and Aeri never pays or claims an order without the store's order number. Motion is limited to the launch reveal and responses to what you do, and it follows the system Reduce Motion setting.
+The repository is a mobile app plus a private API. There is no consumer web app. The conversation UI uses the MIT-licensed native [assistant-ui](https://www.assistant-ui.com/docs/react-native) library.
+
+The design is calm and light sky-blue. Each state has one primary action, and approving a cart is a press-and-hold. The interface uses SF Pro and SF Symbols on iPhone, with native Liquid Glass on iOS 26 and an opaque surface elsewhere. Motion follows the system Reduce Motion setting.
+
+## What works today
+
+| Capability | Status (October 4, 2026) |
+| --- | --- |
+| Video map → review → memory | **Works with labeled samples.** The flow covers record, library and Files upload, places, timestamps, evidence type, close-up requests, corrections and required counts. It also shows "not seen this time", confirms into memory grouped by place, and answers "where is…?" recall. Real video reading needs `GEMINI_API_KEY`. Without it, Aeri shows a map marked **Sample** that is not from your clip. |
+| Gemini perception adapter | **Built and fixture-tested, not live.** It uses `generateContent` with inline video at 2 fps, YouTube `fileData`, and a Files API fallback. It extracts real ffmpeg frames at each timestamp and re-encodes large clips. It is tested against Gemini-shaped replies on a real generated clip. No key is configured. |
+| Recipe video → missing items | **Works with a labeled sample recipe.** Subtraction uses only confirmed and fresh memory. Stale pantry counts are flagged rather than trusted. Generic ingredients match specific items (spaghetti counts as pasta), and pack sizes count by weight. Real extraction needs Gemini. |
+| Social video links | **Refused honestly.** Instagram, TikTok, X, Facebook and similar links ask you to save the video and upload it. Direct `https://…mp4/.mov/.webm` links are downloaded, with private-network addresses refused. |
+| Photo → product | **Works with labeled samples.** It applies your instruction plus saved preferences (brand, size, budget, allergies, stores). Matches are labeled exact, likely or similar. A match is only "exact" after the store page confirms brand, variety, size and price. A non-exact match needs explicit acknowledgement before it goes on a list. Real photo reading needs Gemini. |
+| Store discovery and verification | **Live-tested.** Exa found the right product pages at Target, Walmart and Whole Foods. Kernel read the price, stock and store from Target's own page (for example $7.49, in stock). The store shown is chosen from the cloud browser's location, not yours, and the app says so. Walmart sometimes shows a bot check; that is reported as unverified. |
+| Multi-store comparison | **Sample stores work and are instant. The live run takes about 2 minutes and usually comes back incomplete.** Totals are all-in (items, fees, tax and tip), and a two-store split is offered only when it saves money. Live product pages don't show fees or tax, so live totals say what is unknown and are never called cheapest. Quotes expire after 30 minutes. |
+| Cart preparation and review | **Live-tested in a guest cart.** Kernel added one approved Target item and the page confirmed it. The live view opens in the in-app browser through a short-lived server link. Signed-in carts, store selection and quantities above one still need your retailer login. Checkout and payment stay with you. |
+| Order, delivery, memory | **Works.** You enter the order number from the store, then check off what arrived. Only items that arrived are added to memory. |
+| Open conversation and voice | **Needs keys.** Mastra over Neon AI Gateway, and Gemini transcription. Key-free mode handles commands such as "I have 6 eggs", "we used 2 eggs", "my shirt size is M", "where is the milk?" and recipe links. |
+
+See [docs/DEMO.md](docs/DEMO.md) for the rehearsed walkthrough and [BUILD_PLAN.md](BUILD_PLAN.md) for the plan and its status.
 
 ## Run now, without sponsor keys
 
-Requires Node 22 and npm. On your computer:
+Requires Node 22, npm, and ffmpeg (optional; it adds evidence frames). On your computer:
 
 ```bash
 npm ci
@@ -22,40 +45,49 @@ In a second terminal:
 npm run dev:mobile
 ```
 
-On your iPhone, install Expo Go from the App Store, join the same Wi-Fi as your computer, and scan the QR code with the Camera app. Enter the API address shown by setup (your computer's LAN IP) and the access code stored in the ignored root `.env`. Liquid Glass, SF Symbols, haptics, camera and microphone show their real behavior on a device. The API address can be changed on the connection screen; `localhost` works only in a simulator on the same machine. On iOS Simulator use `http://localhost:8787`; on an Android emulator use `http://10.0.2.2:8787`.
+On your iPhone, install Expo Go, join the same Wi-Fi as your computer, and scan the QR code with the Camera app. Enter the API address shown by setup (your computer's LAN IP) and the access code stored in the ignored root `.env`. `localhost` works only in a simulator on the same machine. On iOS Simulator, use `http://localhost:8787`. On an Android emulator, use `http://10.0.2.2:8787`. Camera, microphone, Liquid Glass and haptics need a device.
 
-To inspect the same React Native screens locally without a device, run `npx expo start --web --host localhost` from `apps/mobile` and open the printed localhost URL. Connect to `http://127.0.0.1:8787` with the access code in `.env`. This browser build is a development preview; the delivered product remains the iOS/Android app. Preview credentials are kept in browser session storage, while iOS/Android use SecureStore. Device camera, microphone and native Liquid Glass still require a phone or simulator.
-
-Key-free mode supports chat commands such as `I have 3 eggs`, `We used 2 eggs`, and `My shirt size is medium`. Pasting a YouTube link creates a **clearly marked sample recipe** and a draft missing-ingredient list for review. Uploading a kitchen video produces **clearly marked sample observations** for the confirmation UI. It does not pretend to understand the video without Gemini. Inventory, messages, tasks and events persist locally in ignored `.data/state.json`.
+If `.env` holds `EXA_API_KEY` and `KERNEL_API_KEY`, "Compare stores" runs the live check. Choose **⋯ → Rehearse with sample prices** for the instant, labeled sample stores.
 
 ## Activate providers
 
-Copy values into the root `.env`; never put API keys in `EXPO_PUBLIC_*` variables or the app. See [provider setup](docs/PROVIDER_SETUP.md) for exact handoffs.
+Put values in the root `.env`. Never put API keys in `EXPO_PUBLIC_*` variables or in the app. [Provider setup](docs/PROVIDER_SETUP.md) has the exact steps.
 
 | Provider | Variables | What it enables |
 | --- | --- | --- |
-| Neon Postgres | `DATABASE_URL` | Durable hosted state instead of local JSON |
-| Neon AI Gateway | `NEON_AI_GATEWAY_API_KEY`, `NEON_AI_GATEWAY_BASE_URL`, `NEON_AI_GATEWAY_MODEL` | Mastra open-ended agent loop and retailer browser planner |
-| Gemini direct API | `GEMINI_API_KEY`, `GEMINI_VIDEO_MODEL` | Public YouTube recipe understanding, kitchen video observations, voice transcription |
-| Kernel | `KERNEL_API_KEY`, `KERNEL_RETAILER_URL` | Hosted browser and live retailer view; with Gateway, constrained cart-preparation agent |
-| Exa | `EXA_API_KEY` | Product research endpoint |
-| AgentMail | `AGENTMAIL_WEBHOOK_SECRET` | Signed inbound receipt evidence, queued for review |
+| Gemini direct API | `GEMINI_API_KEY`, `GEMINI_VIDEO_MODEL`, `GEMINI_AUDIO_MODEL` | Real video maps, recipe videos, photo reading, voice |
+| Neon AI Gateway | `NEON_AI_GATEWAY_API_KEY`, `NEON_AI_GATEWAY_BASE_URL`, `NEON_AI_GATEWAY_MODEL` | Open conversation through Mastra |
+| Neon AI Gateway (video) | `NEON_AI_GATEWAY_VISION_MODEL`, `NEON_AI_GATEWAY_VIDEO_VERIFIED=1` | Video and photos on Gateway credit, **only after `npm run probe:gateway-video` passes** |
+| Exa + Kernel | `EXA_API_KEY`, `KERNEL_API_KEY` | Live product discovery, store-page checks, cart preparation, live review |
+| Neon Postgres | `DATABASE_URL` | Hosted state instead of local JSON |
+| AgentMail | `AGENTMAIL_WEBHOOK_SECRET` | Signed receipt evidence (needs a public HTTPS API) |
 
-The user approves the exact draft items before the browser starts. The store or Kernel live view now opens in an in-app browser for cart review. Aeri never submits payment. Opening a checkout is **not** a placed order; the user records the merchant's order reference after checkout and confirms delivery before purchased items enter inventory. Retailer login, prices, availability, and product matching require a live store rehearsal after Kernel/Gateway credentials arrive. The planned multi-retailer authentication and final-order approval flow is in [BUILD_PLAN.md](BUILD_PLAN.md).
+Live rehearsal scripts spend a little Exa and Kernel credit, never buy anything, and always delete their browsers:
+
+- `npm run check:retailer -w @personal-agent/api -- "<product>" target.com`
+- `npm run check:cart -w @personal-agent/api -- <product URL>`, which adds to a throwaway guest cart
+- `npm run check:compare -w @personal-agent/api`
 
 ## Project layout
 
-- `apps/mobile`: Expo Router, native assistant-ui conversation, camera/video upload, in-app voice conversation, Memory and Tasks screens.
-- `apps/api`: Hono API, Mastra tools, provider adapters, access-code auth, local/Neon store, and AgentMail webhook.
-- `packages/core`: Zod state contracts, deterministic ingredient subtraction and approval transitions.
-- `docs/DEMO.md`: two-minute demo path and current verification gates.
+- `apps/mobile`: Expo Router app (Agent, Memory, Tasks), the video map review, photo results, store comparison, voice.
+- `apps/api`:
+  - `perception.ts`: Gemini and the Gateway.
+  - `media.ts`: frames, re-encoding, link import.
+  - `market.ts`: Exa, Kernel.
+  - `service.ts`: flows and background jobs.
+  - Also the Mastra tools, auth, store and webhook.
+- `packages/core`: Zod contracts plus deterministic logic. That covers video-map normalization and merging, reconciliation, confirmation, freshness, recall, product matching, and basket comparison.
 
-`npm run typecheck` checks all packages. `npm test` covers quantity math, scan confirmation, API authentication, cart approval and persistence. `npx expo export --platform ios` in `apps/mobile` verifies the native JS bundle. A real phone build and sponsor-backed integration tests still need credentials and device access.
-
-For an installable Android demo, `apps/mobile/eas.json` includes an internal `preview` APK profile. Run `eas build --platform android --profile preview` from `apps/mobile` after connecting an Expo account. iOS internal distribution additionally needs Apple signing/provisioning.
+`npm run typecheck` checks every package. `npm test` runs 45 tests covering the logic above and the authenticated API flows. `npx expo export --platform ios|android` in `apps/mobile` bundles the native app.
 
 ## Security and privacy
 
-The API rejects all `/v1` calls without the access code; the phone stores that code in Expo SecureStore. The app never embeds provider keys. The local JSON store is for one private household; set Neon Postgres for hosted use. AgentMail verifies Svix signatures. This is a hackathon MVP, not a multi-household service.
+- Every `/v1` call needs the access code, which the phone keeps in SecureStore. Provider keys stay on the server.
+- Raw video is written to a private temp file only while it is processed, then deleted. Small evidence frames are kept only for sightings you accept.
+- Kernel live-view links grant control of the store browser. They are held in server memory, never saved in state, and are issued only while the session is alive.
+- Browsers are deleted after an order number is saved or the list is discarded.
+- AgentMail requests are checked with Svix signatures.
+- Local setup uses HTTP on your own Wi-Fi only. A hosted build needs HTTPS.
 
-The generated local setup uses HTTP only for same-Wi-Fi development. Use an HTTPS API URL for hosted builds and avoid sending the access code over untrusted networks.
+This is a hackathon MVP for one private household.
