@@ -41,10 +41,11 @@ describe('authenticated household flow', () => {
     const form = new FormData(); form.append('video', new File([new Uint8Array([0, 1])], 'kitchen.mp4', { type: 'video/mp4' }));
     const scan = await json(await app.request('/v1/scans', { method: 'POST', headers: { Authorization: auth.Authorization }, body: form }));
     expect(scan.status).toBe('needs_review');
+    expect(scan.source).toBe('demo');
     expect((await json(await app.request('/v1/bootstrap', { headers: auth }))).state.inventory).toEqual([]);
     const decisions = Object.fromEntries(scan.observations.map((item: any, index: number) => [item.id, index === 0 ? 'accepted' : 'rejected']));
     const confirmed = await json(await app.request(`/v1/scans/${scan.id}/confirm`, { method: 'POST', headers: auth, body: JSON.stringify({ decisions }) }));
-    expect(confirmed.inventory.map((item: any) => item.name)).toEqual(['Tomatoes']);
+    expect(confirmed.inventory.map((item: any) => item.name)).toEqual(['Milk']);
     expect((await app.request(`/v1/scans/${scan.id}/confirm`, { method: 'POST', headers: auth, body: JSON.stringify({ decisions }) })).status).toBe(400);
   });
 

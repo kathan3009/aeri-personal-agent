@@ -26,7 +26,7 @@ it('searches grocery products and returns only distinct HTTPS product links', as
   const [url, options] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
   expect(url).toBe('https://api.exa.ai/search');
   expect(options.headers).toMatchObject({ 'x-api-key': 'test-exa-key' });
-  expect(JSON.parse(String(options.body))).toMatchObject({ category: 'product', numResults: 5 });
+  expect(JSON.parse(String(options.body))).toMatchObject({ type: 'auto', numResults: 5 });
 });
 
 it('names an Exa API failure without exposing its key', async () => {
