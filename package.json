@@ -6,6 +6,7 @@
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "setup:local": "node scripts/setup-local.mjs",
+    "probe:gateway-video": "node scripts/probe-gateway-video.mjs",
     "dev:api": "npm run dev -w @personal-agent/api",
     "dev:mobile": "npm run start -w @personal-agent/mobile",
     "typecheck": "npm run typecheck -w @personal-agent/core && npm run typecheck -w @personal-agent/api && npm run typecheck -w @personal-agent/mobile",

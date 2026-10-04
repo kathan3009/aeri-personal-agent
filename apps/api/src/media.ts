@@ -50,6 +50,19 @@ export async function extractFrames(path: string, scanId: string, moments: Array
   return frames;
 }
 
+/**
+ * Re-encodes a clip small enough to send inline: 480p, 2 frames a second (what the model samples anyway), and mono
+ * speech so narration still counts as evidence. A 40-second phone video drops from tens of MB to about 1-3 MB.
+ */
+export async function compressForModel(path: string): Promise<Uint8Array | null> {
+  if (!(await hasFfmpeg())) return null;
+  const out = `${path}.model.mp4`;
+  try {
+    await run('ffmpeg', ['-v', 'error', '-y', '-i', path, '-vf', 'scale=-2:480,fps=2', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '32k', '-ac', '1', '-movflags', '+faststart', out], { timeout: 120_000 });
+    return new Uint8Array(await readFile(out));
+  } catch { return null; } finally { await rm(out, { force: true }); }
+}
+
 const safe = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '');
 export async function readFrame(scanId: string, name: string): Promise<Uint8Array | null> {
   if (!/^[a-zA-Z0-9_-]+\.jpg$/.test(name)) return null;

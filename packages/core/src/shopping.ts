@@ -155,23 +155,36 @@ export function compareBaskets(needs: ShoppingNeed[], offers: Offer[], quotes: S
 }
 
 const miles = (b: Basket) => b.distanceMiles == null ? 'distance unknown' : `${b.distanceMiles.toFixed(1)} mi${b.distanceMeasure === 'straight_line' ? ' straight-line' : b.distanceMeasure === 'driving' ? ' driving' : ''}`;
-const total = (b: Basket) => b.complete ? `${dollars(b.totalCents!)} all-in` : `${dollars(b.knownTotalCents)} before ${b.unknowns.join(', ')}`;
+/** "2 prices, fees, tax and tip" rather than one entry per store. */
+function unknownSummary(b: Basket): string {
+  const parts: string[] = [];
+  const prices = b.unknowns.find(u => /price/.test(u));
+  if (prices) parts.push(prices);
+  if (b.unknowns.some(u => /fee/.test(u))) parts.push('fees');
+  if (b.unknowns.some(u => /tax/.test(u))) parts.push('tax');
+  if (b.unknowns.some(u => /tip/.test(u))) parts.push('tip');
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0] ?? '';
+}
+const total = (b: Basket) => b.complete ? `${dollars(b.totalCents!)} all-in` : `${dollars(b.knownTotalCents)} so far, without ${unknownSummary(b)}`;
 /** A short, checkable explanation built only from the numbers in the baskets. */
 export function explain(baskets: Basket[], request: ShoppingRequest, rejected: Array<{ merchant: string; reason: string }> = []): string {
   if (!baskets.length) return rejected.length ? `No store fits: ${rejected.map(r => `${r.merchant} (${r.reason})`).join('; ')}.` : 'No store options were found.';
   const [best, next] = baskets;
   const parts: string[] = [];
   const goal = request.optimize === 'nearest' ? 'closest' : request.optimize === 'fastest' ? 'fastest' : request.optimize === 'preferred_store' ? 'your preferred store' : 'lowest all-in cost';
-  parts.push(`${best.label} is the ${goal}: ${total(best)}, ${miles(best)}.`);
-  if (best.missing) parts.push(`It is missing ${best.missing} ${best.missing === 1 ? 'item' : 'items'}.`);
+  // A basket with unknown prices or fees is never called the cheapest.
+  if (best.complete || request.optimize !== 'lowest_total') parts.push(`${best.label} is the ${goal}: ${total(best)}, ${miles(best)}.`);
+  else parts.push(`No store has a complete total yet. ${best.label}: ${total(best)}${best.missing ? `, missing ${best.missing} ${best.missing === 1 ? 'item' : 'items'}` : ''}.`);
+  if (best.complete && best.missing) parts.push(`It is missing ${best.missing} ${best.missing === 1 ? 'item' : 'items'}.`);
   if (next) {
     if (best.complete && next.complete) {
       const diff = next.totalCents! - best.totalCents!;
       parts.push(diff > 0 ? `${next.label} costs ${dollars(diff)} more (${dollars(next.totalCents!)}), ${miles(next)}.` : `${next.label} is the same price, ${miles(next)}.`);
-    } else parts.push(`${next.label}: ${total(next)}, ${miles(next)}.`);
+    } else parts.push(`${next.label}: ${total(next)}${next.missing ? `, missing ${next.missing}` : ''}.`);
     if (best.merchants.length > 1) parts.push(`Splitting saves more than ${dollars(SPLIT_PENALTY_CENTS)} after both stores' fees.`);
   }
   if (best.overBudget && request.budgetCents) parts.push(`Every option is over your ${dollars(request.budgetCents)} budget.`);
+  if (!best.complete && baskets.every(b => b.distanceMiles == null)) parts.push('Fees, tax and the store location appear at checkout.');
   if (!best.verified) parts.push('Some prices come from search results, not the store page; they are checked again before checkout.');
   return parts.join(' ');
 }

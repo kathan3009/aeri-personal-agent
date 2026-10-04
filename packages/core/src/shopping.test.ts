@@ -42,6 +42,13 @@ describe('basket comparison', () => {
     expect(result.baskets[2].missing).toBe(1);
   });
 
+  it('never calls a basket with unknown prices or fees the cheapest', () => {
+    const offers = [offer({ needId: 'tom', merchant: 'A', priceCents: 300 }), offer({ needId: 'pasta', merchant: 'A', priceCents: null, verified: false, source: 'exa' })];
+    const result = compareBaskets(needs, offers, [quote({ merchant: 'A', fulfillment: 'delivery', deliveryFeeCents: null, serviceFeeCents: null, taxRate: null, tipCents: null, distanceMiles: null, distanceMeasure: null })], { optimize: 'lowest_total', fulfillment: 'either', substitutions: 'ask', preferredMerchants: [], avoid: [] }, id);
+    expect(result.explanation).not.toMatch(/lowest all-in cost/);
+    expect(result.explanation).toMatch(/^No store has a complete total yet\. A delivery: \$12\.00 so far, without 1 price, fees, tax and tip\./);
+  });
+
   it('proposes a two-store split only when it beats both single stores after fees', () => {
     const offers = [offer({ needId: 'tom', merchant: 'A', priceCents: 100 }), offer({ needId: 'pasta', merchant: 'A', priceCents: 900 }),
       offer({ needId: 'tom', merchant: 'B', priceCents: 900 }), offer({ needId: 'pasta', merchant: 'B', priceCents: 100 })];

@@ -148,6 +148,7 @@ function CartCard({ cart }: { cart: Cart }) {
     actions: [
       ...(recipe?.sourceUrl ? [{ label: 'Watch the recipe video', icon: Clapperboard, onPress: () => void Linking.openURL(recipe.sourceUrl!) }] : []),
       ...(draft && proposal?.status === 'ready' ? [{ label: 'Compare again', detail: 'Fresh prices from each store', icon: Store, onPress: () => void act('compare', {}) }] : []),
+      ...(draft && providers?.exa && providers?.kernel && cart.items.length ? [{ label: 'Rehearse with sample prices', detail: 'Three labeled sample stores, instant', icon: Store, onPress: () => void act('compare', { live: false }) }] : []),
       ...(providers?.exa && cart.items.length && !suggestions ? [{ label: 'Find product links', detail: 'Search the web for each item', icon: Search, onPress: () => void findLinks() }] : []),
       ...(['draft', 'approved', 'checkout_ready'].includes(cart.status) ? [{ label: 'Discard this list', icon: Trash, tone: 'destructive' as const, onPress: async () => { if (await act('cancel')) toast('List discarded', 'info'); } }] : []),
     ],

@@ -52,7 +52,7 @@ const rules = {
 // Read the retailer's own price/store/stock elements with locators (they pierce shadow DOM, unlike querySelector).
 const firstText = async (sels, timeout) => { for (const sel of sels) { const t = await page.locator(sel).first().textContent({ timeout }).catch(() => null); if (t && t.trim()) return t.trim(); } return null; };
 let shownPrice = null;
-for (let i = 0; i < 12 && rules.price.length && !shownPrice; i++) { const t = await firstText(rules.price, 1500); const m = t?.match(/\\$\\s?(\\d+(?:\\.\\d{2})?)/); if (m) shownPrice = m[1]; else await page.waitForTimeout(800); }
+for (let i = 0; i < 9 && rules.price.length && !shownPrice; i++) { const t = await firstText(rules.price, 1200); const m = t?.match(/\\$\\s?(\\d+(?:\\.\\d{2})?)/); if (m) shownPrice = m[1]; else await page.waitForTimeout(600); }
 if (!rules.price.length) await page.waitForTimeout(2500);
 const shownStore = await firstText(rules.store, 1500);
 const stockText = (await Promise.all(rules.stock.map(sel => page.locator(sel).allTextContents().catch(() => [])))).flat().join(' ').slice(0, 400);
@@ -82,11 +82,14 @@ return { status, url: page.url(), shownPrice, shownStore, stockText, ...facts };
 type PageFacts = { status: number; url: string; shownPrice?: string | null; shownStore?: string | null; stockText?: string; name?: string | null; brand?: string | null; sku?: string | null; gtin?: string | null; price?: string | number | null; currency?: string | null; availability?: string; size?: string | null; store?: string | null; title?: string; text?: string };
 export function toVerification(facts: PageFacts | null, checkedAt: string, error?: string): Verification {
   if (!facts) return { status: 'failed', method: 'kernel', checkedAt, availability: 'unknown', note: error ? scrub(error).slice(0, 120) : 'The page did not load' };
-  const blocked = facts.status === 403 || facts.status === 429 || /access denied|robot|captcha|are you a human|verify you are human|blocked/i.test(`${facts.title ?? ''} ${facts.text ?? ''}`.slice(0, 400));
+  const blocked = facts.status === 403 || facts.status === 429 || /access denied|robot or human|captcha|are you a human|verify you are human|blocked/i.test(`${facts.title ?? ''} ${facts.text ?? ''}`.slice(0, 400));
+  const missing = facts.status === 404 || /product not found|page not found|no longer available|404/i.test(`${facts.title ?? ''} ${facts.name ?? ''}`);
+  if (blocked || missing) return { status: blocked ? 'blocked' : 'failed', method: 'kernel', checkedAt, availability: 'unknown', url: facts.url, note: blocked ? 'The store showed a bot check instead of the product' : 'The product page no longer exists' };
   // Structured data first; otherwise the price the retailer's own page displays.
   const raw = facts.price ?? facts.shownPrice;
   const price = raw == null ? NaN : Number(String(raw).replace(/[^\d.]/g, ''));
-  const a = `${facts.availability ?? ''} ${facts.stockText ?? ''}`.toLowerCase();
+  // The page's structured availability wins; visible fulfillment text is the fallback.
+  const a = (facts.availability?.trim() ? facts.availability : facts.stockText ?? '').toLowerCase();
   const availability = /outofstock|soldout|discontinued|out_of_stock|out of stock|sold out/.test(a) && !/instock|in stock|ready within|pickup today|delivery (as soon as|today)/.test(a) ? 'out_of_stock' as const : /instock|in_stock|in stock|ready within|pickup today|delivery (as soon as|today)/.test(a) ? 'in_stock' as const : /limited/.test(a) ? 'limited' as const : 'unknown' as const;
   const priceCents = Number.isFinite(price) && price > 0 ? Math.round(price * 100) : undefined;
   return {
@@ -100,21 +103,25 @@ export function toVerification(facts: PageFacts | null, checkedAt: string, error
   };
 }
 
-/** Opens each product page in one stealth Kernel browser, reads its structured facts, and always deletes the session. */
+/** Reads product pages with one stealth Kernel browser per store, stores in parallel; every session is deleted. */
 export async function verifyPages(urls: string[], now: () => string): Promise<Map<string, Verification>> {
   const client = kernel();
   const results = new Map<string, Verification>();
   if (!client || !urls.length) return results;
-  // Headful: headless renderers crashed on Target product pages during the live check.
-  const browser = await withProvider('Kernel', () => client.browsers.create({ stealth: true, headless: false, timeout_seconds: 120 }));
-  try {
-    for (const url of urls) {
-      try {
-        const run = await client.browsers.playwright.execute(browser.session_id, { code: extractScript(url), timeout_sec: 50 });
-        results.set(url, run.success ? toVerification(run.result as PageFacts, now()) : toVerification(null, now(), run.error));
-      } catch (error) { results.set(url, toVerification(null, now(), (error as Error).message)); }
-    }
-  } finally { await client.browsers.deleteByID(browser.session_id).catch(() => undefined); }
+  const byHost = new Map<string, string[]>();
+  for (const url of urls) { const host = new URL(url).hostname; byHost.set(host, [...(byHost.get(host) ?? []), url]); }
+  await Promise.all([...byHost.values()].slice(0, 4).map(async group => {
+    // Headful: headless renderers crashed on Target product pages during the live check.
+    const browser = await withProvider('Kernel', () => client.browsers.create({ stealth: true, headless: false, timeout_seconds: 120 }));
+    try {
+      for (const url of group) {
+        try {
+          const run = await client.browsers.playwright.execute(browser.session_id, { code: extractScript(url), timeout_sec: 50 });
+          results.set(url, run.success ? toVerification(run.result as PageFacts, now()) : toVerification(null, now(), run.error));
+        } catch (error) { results.set(url, toVerification(null, now(), (error as Error).message)); }
+      }
+    } finally { await client.browsers.deleteByID(browser.session_id).catch(() => undefined); }
+  }));
   return results;
 }
 
@@ -123,7 +130,9 @@ export async function verifyPages(urls: string[], now: () => string): Promise<Ma
  * at the retailer. Fees, tax, tip and distance are not published on product pages, so they stay unknown.
  */
 export async function liveOffers(needs: ShoppingNeed[], domains: string[], now: () => string, id: () => string): Promise<{ offers: Offer[]; quotes: StoreQuote[] }> {
-  const found = await Promise.all(needs.slice(0, 8).map(async need => ({ need, hits: await discoverProducts(`${need.brand ?? ''} ${need.name} grocery product`.trim(), domains, 1).catch(() => []) })));
+  // Only real product pages become offers; articles and category pages are skipped.
+  const found = await Promise.all(needs.slice(0, 8).map(async need => ({ need, hits: (await discoverProducts(`${need.brand ?? ''} ${need.name}${need.quantity.unit === 'each' ? '' : ` ${need.quantity.amount} ${need.quantity.unit}`} grocery`.trim(), domains, 2).catch(() => []))
+    .filter(hit => productPath.test(new URL(hit.url).pathname)).filter((hit, i, all) => all.findIndex(h => h.merchant === hit.merchant) === i) })));
   const urls = found.flatMap(f => f.hits.map(h => h.url));
   const verified = await verifyPages(urls, now);
   const offers: Offer[] = found.flatMap(({ need, hits }) => hits.map(hit => {
@@ -151,6 +160,7 @@ await page.goto(${JSON.stringify(url)}, { waitUntil: 'domcontentloaded', timeout
 await page.waitForTimeout(2000);
 if (/sign ?in|log ?in|captcha|access denied/i.test(await page.title())) return { result: 'uncertain', detail: 'The store asked for sign-in or a check' };
 const button = page.getByRole('button', { name: /add to (cart|bag|basket)|^add$|add for (delivery|pickup|shipping)/i }).first();
+await button.waitFor({ state: 'visible', timeout: 15000 }).catch(() => undefined);
 if (!(await button.count())) return { result: /out of stock|sold out|unavailable/i.test(await page.locator('body').innerText()) ? 'unavailable' : 'uncertain', detail: 'No add-to-cart button found' };
 if (await button.isDisabled().catch(() => false)) return { result: 'unavailable', detail: 'Add to cart is disabled' };
 await button.click({ timeout: 10000 });

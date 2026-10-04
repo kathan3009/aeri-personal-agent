@@ -10,7 +10,7 @@ import {
 import { z } from 'zod';
 import { demoCandidates, demoHouseholdMap, demoProductSpec, demoRecipe, fixtureMarket, parseShoppingCommand } from './demo.js';
 import { closeSession, discoverProducts, liveMarketAvailable, liveOffers, merchantDomainsFor, merchantName, prepareMerchantCart, sessionAlive, verifyPages } from './market.js';
-import { classifyLink, downloadVideo, extractFrames, probeDuration, pruneFrames, withTempFile } from './media.js';
+import { classifyLink, compressForModel, downloadVideo, extractFrames, probeDuration, pruneFrames, withTempFile } from './media.js';
 import { perceiveHousehold, perceiveProduct, perceiveRecipe, perception, videoMimeTypes, type MediaInput } from './perception.js';
 import { scrub, withProvider } from './providers.js';
 import type { Store } from './store.js';
@@ -171,7 +171,10 @@ export class AgentService {
         const result = await withTempFile(input.data, extension(input.mimeType), async path => {
           duration = await probeDuration(path);
           if (duration && duration > MAX_VIDEO_SECONDS) throw new Error(`That clip is ${Math.round(duration)} seconds. Record 20 to 40 seconds, or under 3 minutes.`);
-          const built = buildVideoMap(await perceiveHousehold(p, { kind: 'file', data: input.data, mimeType: input.mimeType }), id, duration);
+          // Large clips (and every clip on the Gateway route, which only takes small inline video) are re-encoded first.
+          const small = p.kind === 'gateway' || input.data.byteLength > 18_000_000 ? await compressForModel(path) : null;
+          const media: MediaInput = small ? { kind: 'file', data: small, mimeType: 'video/mp4' } : { kind: 'file', data: input.data, mimeType: input.mimeType };
+          const built = buildVideoMap(await perceiveHousehold(p, media), id, duration);
           // One frame per sighting and per unclear spot, so the person can see exactly what Aeri means.
           const moments = [...built.observations.map(o => ({ key: o.id, atSec: o.sightings[0].startSec })), ...built.unclear.filter(u => u.atSec !== undefined).map(u => ({ key: u.id, atSec: u.atSec! }))];
           return { built, frames: await extractFrames(path, scanId, moments) };
@@ -258,7 +261,12 @@ export class AgentService {
         const recipeId = id();
         if (!p) recipe = demoRecipe(recipeId, now(), source.url);
         else {
-          const raw = await perceiveRecipe(p, input);
+          let media = input;
+          if (input.kind === 'file' && (p.kind === 'gateway' || input.data.byteLength > 18_000_000)) {
+            const small = await withTempFile(input.data, extension(input.mimeType), compressForModel);
+            if (small) media = { kind: 'file', data: small, mimeType: 'video/mp4' };
+          }
+          const raw = await perceiveRecipe(p, media);
           if (raw.isRecipe === false || !raw.ingredients.length) throw new Error('That video doesn’t look like a recipe I can shop for.');
           recipe = recipeSchema.parse({
             id: recipeId, createdAt: now(), sourceUrl: source.url, source: p.kind, sourceKind: source.kind === 'youtube' ? 'youtube' : source.kind === 'link' ? 'link' : 'video_file', sourceLabel: source.label,
