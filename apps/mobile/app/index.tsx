@@ -1,80 +1,177 @@
-import { useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from 'expo-glass-effect';
-import { Bot, Brain, ListTodo, Settings2, Sparkles } from 'lucide-react-native';
+import { CircleAlert, House, ListChecks, LogOut, Phone, RotateCw, Sparkles } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AgentTab } from '../components/AgentTab';
 import { MemoryTab } from '../components/MemoryTab';
 import { TasksTab } from '../components/TasksTab';
+import { Aura, Button, Dot, Field, Glass, Group, Row, Sheet, type Icon } from '../components/ui';
 import { useApp } from '../lib/api';
-import { c } from '../lib/theme';
+import { haptic } from '../lib/haptics';
+import { NavContext } from '../lib/nav';
+import { attentionTabs, type Tab } from '../lib/pending';
+import { c, radius, skyFor, t } from '../lib/theme';
 
-type Tab = 'agent' | 'memory' | 'tasks';
+const preview = Platform.OS === 'web';
+
+function Sky() {
+  const colors = useMemo(() => skyFor(), []);
+  return <LinearGradient pointerEvents="none" colors={colors} locations={[0, 0.45, 1]} style={styles.sky} />;
+}
 
 function ConnectScreen() {
   const { connect } = useApp();
   const insets = useSafeAreaInsets();
-  const [url, setUrl] = useState(Platform.OS === 'web' ? 'http://127.0.0.1:8787' : process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787');
-  const [token, setToken] = useState(''); const [busy, setBusy] = useState(false);
-  const submit = async () => { try { setBusy(true); await connect(url, token); } catch (error) { Alert.alert('Could not connect', (error as Error).message); } finally { setBusy(false); } };
-  return <LinearGradient colors={['#DFF3FC', '#F5FAFD', '#FFFFFF']} style={[styles.connect, { paddingTop: insets.top + 38, paddingBottom: insets.bottom + 25 }]}>
-    <View style={styles.connectOrb}><Sparkles size={31} color={c.blue} strokeWidth={1.7} /></View>
-    <Text style={styles.connectTitle}>Meet Aeri.</Text><Text style={styles.connectSubtitle}>A personal agent that knows your kitchen, remembers your preferences, and helps you shop with intention.</Text>
-    <View style={styles.connectCard}><Text style={styles.connectCardTitle}>Connect your agent</Text><Text style={styles.connectCaption}>Your API lives on your computer or private server.</Text>
-      <Text style={styles.fieldLabel}>API ADDRESS</Text><TextInput value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" style={styles.connectInput} />
-      <Text style={styles.fieldLabel}>ACCESS CODE</Text><TextInput value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} secureTextEntry placeholder="Enter your private access code" placeholderTextColor="#9BAFBB" style={styles.connectInput} />
-      <Pressable onPress={() => void submit()} disabled={busy} style={styles.connectButton}>{busy ? <ActivityIndicator color={c.white} /> : <Text style={styles.connectButtonText}>Continue with Aeri</Text>}</Pressable>
-    </View>
-    <Text style={styles.connectFoot}>{Platform.OS === 'web' ? 'Local preview keeps your access code for this browser session.' : "Access code stays in your phone's secure storage."}</Text>
-  </LinearGradient>;
+  const [url, setUrl] = useState(preview ? 'http://127.0.0.1:8787' : process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787');
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const submit = async () => {
+    try { setBusy(true); setProblem(null); await connect(url, token); haptic.success(); }
+    catch (error) { haptic.warning(); setProblem((error as Error).message); }
+    finally { setBusy(false); }
+  };
+  return <View style={styles.root}>
+    <Sky />
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.connect, { paddingTop: insets.top + 56, paddingBottom: insets.bottom + 24 }]}>
+        <Aura size={64} mode={busy ? 'thinking' : 'idle'} />
+        <Text style={styles.connectTitle} accessibilityRole="header">Aeri</Text>
+        <Text style={[t.body, { color: c.ink2, marginTop: 8 }]}>A quiet helper for your home. It remembers what you have, plans what you need, and shops only with your OK.</Text>
+        <Group style={{ marginTop: 36 }}>
+          <Field label="Server address" value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" textContentType="URL" />
+          <Field label="Access code" value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} secureTextEntry placeholder="From your .env file" returnKeyType="go" onSubmitEditing={() => void submit()} />
+        </Group>
+        {problem && <View style={styles.problem} accessibilityLiveRegion="polite"><CircleAlert size={16} color={c.ember} strokeWidth={2} /><Text style={[t.footnote, { color: c.ember, flex: 1 }]}>{problem}</Text></View>}
+        <Button label="Connect" onPress={() => void submit()} loading={busy} disabled={!token.trim()} style={{ marginTop: 22 }} />
+        <Text style={[t.footnote, styles.connectFoot]}>{preview
+          ? 'Development preview. Your code is kept only for this browser session.'
+          : 'Both are in the .env file on the computer running Aeri. The code stays in this phone’s secure storage.'}</Text>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  </View>;
 }
 
+const capabilityRows = (p: Record<string, boolean> | null, phone: string | null): Array<{ title: string; ready: boolean; detail: string }> => [
+  { title: 'Kitchen memory and lists', ready: true, detail: 'Ready' },
+  { title: 'Open conversation', ready: !!p?.aiGateway, detail: p?.aiGateway ? 'Ready, through Neon AI Gateway' : 'Simple commands only until Neon AI Gateway is connected' },
+  { title: 'Recipe videos', ready: !!p?.gemini, detail: p?.gemini ? 'Reads the actual video with Gemini' : 'Shows a sample recipe until Gemini is connected' },
+  { title: 'Kitchen videos', ready: !!p?.gemini, detail: p?.gemini ? 'Reads the actual video with Gemini' : 'Shows sample items until Gemini is connected' },
+  { title: 'Voice notes', ready: !!p?.gemini, detail: p?.gemini ? 'Ready' : 'Needs Gemini' },
+  { title: 'Store checkout', ready: !!p?.kernel, detail: p?.kernel ? 'Opens a private Kernel browser' : 'Opens the store’s site; you add the items' },
+  { title: 'Product links', ready: !!p?.exa, detail: p?.exa ? 'Ready, through Exa' : 'Needs Exa' },
+  { title: 'Phone line', ready: !!p?.vapi, detail: p?.vapi && phone ? phone : 'Needs Vapi' },
+  { title: 'Receipts by email', ready: !!p?.agentMail, detail: p?.agentMail ? 'Ready, through AgentMail' : 'Needs AgentMail' },
+  { title: 'Storage', ready: true, detail: p?.neon ? 'Neon Postgres' : 'On the computer running Aeri' },
+];
+
+function SettingsSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  const { settings, providers, phoneNumber, error, refresh, disconnect } = useApp();
+  const [refreshing, setRefreshing] = useState(false);
+  return <Sheet visible={visible} onClose={onClose} title="Settings">
+    <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+      <Group style={styles.sheetGroup}>
+        <Row title={settings?.url.replace(/^https?:\/\//, '') ?? 'Not connected'} subtitle={error ? 'Not reachable right now' : 'Connected'} left={<Dot color={error ? c.ember : c.leaf} />}
+          right={refreshing ? <ActivityIndicator color={c.accent} /> : <RotateCw size={18} color={c.accent} strokeWidth={2} />}
+          onPress={async () => { setRefreshing(true); await refresh(); setRefreshing(false); }} accessibilityLabel="Refresh connection" />
+      </Group>
+      <Text style={[t.footnote, styles.sheetLabel]}>What Aeri can do right now</Text>
+      <Group style={styles.sheetGroup} inset={36}>
+        {capabilityRows(providers, phoneNumber).map(row => <Row key={row.title} title={row.title} subtitle={row.detail} left={<Dot color={row.ready ? c.leaf : 'rgba(15,43,64,0.18)'} />} />)}
+      </Group>
+      {phoneNumber && <Button label="Call Aeri" icon={Phone} tone="secondary" onPress={() => void Linking.openURL(`tel:${phoneNumber}`)} style={{ marginTop: 18 }} />}
+      <Button label="Disconnect this device" icon={LogOut} tone="destructive" onPress={() => { onClose(); void disconnect(); }} style={{ marginTop: 10 }} />
+    </ScrollView>
+  </Sheet>;
+}
+
+function Unreachable() {
+  const { error, refresh, disconnect } = useApp();
+  const insets = useSafeAreaInsets();
+  const [busy, setBusy] = useState(false);
+  return <View style={[styles.center, { paddingTop: insets.top }]}>
+    <Aura size={56} mode={busy ? 'thinking' : 'idle'} />
+    <Text style={[t.title2, { marginTop: 24, textAlign: 'center' }]}>Can't reach Aeri</Text>
+    <Text style={[t.subhead, { marginTop: 8, textAlign: 'center', maxWidth: 300 }]}>{error?.replace(/^Can't reach Aeri\.\s*/, '')}</Text>
+    <Button label="Try again" onPress={async () => { setBusy(true); await refresh(); setBusy(false); }} loading={busy} style={{ marginTop: 28, alignSelf: 'stretch' }} />
+    <Button label="Change server" tone="plain" onPress={() => void disconnect()} style={{ marginTop: 6 }} />
+  </View>;
+}
+
+const tabs: Array<{ key: Tab; label: string; icon: Icon }> = [
+  { key: 'agent', label: 'Agent', icon: Sparkles },
+  { key: 'memory', label: 'Memory', icon: House },
+  { key: 'tasks', label: 'Tasks', icon: ListChecks },
+];
+
 export default function Home() {
-  const { settings, state, loading, error, disconnect, refresh, phoneNumber } = useApp();
+  const { settings, state, loading } = useApp();
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('agent');
-  const glass = Platform.OS === 'ios' && isGlassEffectAPIAvailable() && isLiquidGlassAvailable();
-  if (loading) return <View style={[styles.root, { justifyContent: 'center' }]}><ActivityIndicator color={c.blue} /></View>;
+  const [visited, setVisited] = useState<Set<Tab>>(() => new Set(['agent']));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [keyboard, setKeyboard] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboard(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboard(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+  const attention = useMemo(() => attentionTabs(state), [state]);
+  const bottomGap = Math.max(insets.bottom, 14);
+  const bottomInset = 64 + bottomGap + 10;
+  const nav = useMemo(() => ({
+    go: (next: Tab) => { setVisited(seen => new Set(seen).add(next)); setTab(next); },
+    openSettings: () => setSettingsOpen(true), bottomInset, keyboard,
+  }), [bottomInset, keyboard]);
+  if (loading) return <View style={[styles.root, styles.center]}><ActivityIndicator color={c.accent} /></View>;
   if (!settings) return <ConnectScreen />;
-  const navItems = ([['agent', Bot, 'Agent'], ['memory', Brain, 'Memory'], ['tasks', ListTodo, 'Tasks']] as const).map(([key, Icon, label]) => <Pressable key={key} onPress={() => { setTab(key); void refresh(); }} style={styles.navItem}>
-    <View style={[styles.navIcon, tab === key && styles.navActive]}><Icon size={21} color={tab === key ? c.blue : '#95AAB5'} strokeWidth={tab === key ? 2 : 1.7} /></View>
-    <Text style={[styles.navLabel, tab === key && styles.navLabelActive]}>{label}</Text>
-  </Pressable>);
-  return <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.root}>
-    <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
-      <View style={styles.brandRow}><View style={styles.brandIcon}><Sparkles size={17} color={c.blue} strokeWidth={1.8} /></View><Text style={styles.brand}>aeri</Text></View>
-      <Pressable onPress={() => Alert.alert('Aeri connection', `Connected to ${settings.url}`, [...(phoneNumber ? [{ text: 'Call Aeri', onPress: () => void Linking.openURL(`tel:${phoneNumber}`) }] : []), { text: 'Refresh', onPress: () => void refresh() }, { text: 'Disconnect', style: 'destructive' as const, onPress: () => void disconnect() }, { text: 'Cancel' }])} style={styles.settings} accessibilityLabel="Connection settings"><Settings2 size={19} color={c.muted} /></Pressable>
-    </View>
-    {error && <Pressable onPress={() => void refresh()} style={styles.errorBanner}><Text style={styles.errorText}>{error} · tap to retry</Text></Pressable>}
-    <View style={styles.main}>
-      {tab === 'agent' && (state ? <AgentTab /> : <ActivityIndicator color={c.blue} style={{ marginTop: 70 }} />)}
-      {tab === 'memory' && <MemoryTab />}
-      {tab === 'tasks' && <TasksTab />}
-    </View>
-    {glass ? <GlassView glassEffectStyle="regular" tintColor="#E4F4FC" style={[styles.navWrap, styles.navGlass, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-      {navItems}
-    </GlassView> : <View style={[styles.navWrap, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-      {navItems}
-    </View>}
-  </KeyboardAvoidingView>;
+  if (!state) return <View style={styles.root}><Sky /><Unreachable /><SettingsSheet visible={settingsOpen} onClose={() => setSettingsOpen(false)} /></View>;
+  return <NavContext.Provider value={nav}>
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.root}>
+      <Sky />
+      {tabs.map(({ key }) => visited.has(key) && <View key={key} style={[styles.screen, tab !== key && styles.hidden]} accessibilityElementsHidden={tab !== key} importantForAccessibility={tab === key ? 'auto' : 'no-hide-descendants'}>
+        {key === 'agent' ? <AgentTab /> : key === 'memory' ? <MemoryTab /> : <TasksTab />}
+      </View>)}
+      {!keyboard && <View pointerEvents="box-none" style={[styles.tabDock, { bottom: bottomGap }]}>
+        <Glass style={styles.tabBar}>
+          <View style={styles.tabRow} accessibilityRole="tablist">
+            {tabs.map(({ key, label, icon: TabIcon }) => {
+              const active = tab === key;
+              return <Pressable key={key} onPress={() => { if (!active) haptic.tap(); nav.go(key); }} style={[styles.tabItem, active && styles.tabActive]}
+                accessibilityRole="tab" accessibilityState={{ selected: active }} accessibilityLabel={attention.has(key) ? `${label}, needs your attention` : label}>
+                <View>
+                  <TabIcon size={22} color={active ? c.accent : c.ink2} strokeWidth={active ? 2.1 : 1.8} />
+                  {attention.has(key) && <View style={styles.badge} />}
+                </View>
+                <Text style={[styles.tabLabel, active && { color: c.accent }]}>{label}</Text>
+              </Pressable>;
+            })}
+          </View>
+        </Glass>
+      </View>}
+    </KeyboardAvoidingView>
+    <SettingsSheet visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
+  </NavContext.Provider>;
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: c.background },
-  header: { paddingHorizontal: 23, paddingBottom: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, brandIcon: { width: 30, height: 30, borderRadius: 12, backgroundColor: '#DDF2F9', alignItems: 'center', justifyContent: 'center' }, brand: { color: c.deep, fontSize: 23, letterSpacing: -1.2, fontWeight: '700' },
-  settings: { width: 38, height: 38, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  errorBanner: { backgroundColor: '#FCE8E6', paddingHorizontal: 22, paddingVertical: 8 }, errorText: { color: '#9D4E4C', fontSize: 12 },
-  main: { flex: 1 }, navWrap: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,.96)', borderTopWidth: 1, borderTopColor: '#E8F0F4', paddingTop: 10, paddingHorizontal: 26 },
-  navGlass: { backgroundColor: 'transparent' },
-  navItem: { flex: 1, alignItems: 'center', gap: 2 }, navIcon: { width: 47, height: 33, borderRadius: 17, alignItems: 'center', justifyContent: 'center' }, navActive: { backgroundColor: '#E3F4FB' },
-  navLabel: { color: '#93A7B3', fontSize: 10, fontWeight: '600' }, navLabelActive: { color: c.blue },
-  connect: { flex: 1, paddingHorizontal: 26 }, connectOrb: { width: 74, height: 74, borderRadius: 26, backgroundColor: 'rgba(255,255,255,.78)', alignItems: 'center', justifyContent: 'center', marginTop: 35, marginBottom: 28 },
-  connectTitle: { color: c.deep, fontSize: 42, letterSpacing: -1.8, fontWeight: '600' }, connectSubtitle: { color: c.muted, fontSize: 16, lineHeight: 25, maxWidth: 340, marginTop: 13 },
-  connectCard: { backgroundColor: 'rgba(255,255,255,.9)', borderWidth: 1, borderColor: '#E7F1F6', borderRadius: 25, padding: 22, marginTop: 43, shadowColor: '#8DBAD0', shadowOpacity: .12, shadowRadius: 25, shadowOffset: { width: 0, height: 9 } },
-  connectCardTitle: { color: c.deep, fontSize: 20, fontWeight: '600' }, connectCaption: { color: c.muted, fontSize: 12, marginTop: 6, marginBottom: 23 },
-  fieldLabel: { color: '#83A0AF', fontSize: 10, letterSpacing: 1.2, fontWeight: '800', marginBottom: 7 }, connectInput: { backgroundColor: '#F5F9FB', borderWidth: 1, borderColor: '#E3EDF2', borderRadius: 13, padding: 13, color: c.deep, fontSize: 14, marginBottom: 17 },
-  connectButton: { backgroundColor: c.blue, borderRadius: 14, minHeight: 49, alignItems: 'center', justifyContent: 'center', marginTop: 4 }, connectButtonText: { color: c.white, fontWeight: '700', fontSize: 14 },
-  connectFoot: { color: '#95ABB8', textAlign: 'center', fontSize: 11, marginTop: 'auto', paddingTop: 15 },
+  root: { flex: 1, backgroundColor: c.canvas },
+  sky: { position: 'absolute', top: 0, left: 0, right: 0, height: 360 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
+  screen: { flex: 1 },
+  hidden: { display: 'none' },
+  connect: { paddingHorizontal: 24, flexGrow: 1 },
+  connectTitle: { fontSize: 40, lineHeight: 46, fontWeight: '700', letterSpacing: -1, color: c.ink, marginTop: 26 },
+  problem: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14, paddingHorizontal: 4 },
+  connectFoot: { textAlign: 'center', marginTop: 'auto', paddingTop: 28, paddingHorizontal: 12, color: c.ink3 },
+  sheetGroup: { backgroundColor: c.canvas },
+  sheetLabel: { marginTop: 22, marginBottom: 8, marginLeft: 4 },
+  tabDock: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
+  tabBar: { borderRadius: radius.pill, overflow: 'hidden', width: '86%', maxWidth: 360 },
+  tabRow: { flexDirection: 'row', padding: 5, height: 64 },
+  tabItem: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, borderRadius: radius.pill },
+  tabActive: { backgroundColor: 'rgba(27,120,191,0.1)' },
+  tabLabel: { fontSize: 11, lineHeight: 13, fontWeight: '600', color: c.ink2 },
+  badge: { position: 'absolute', top: -2, right: -5, width: 9, height: 9, borderRadius: 5, backgroundColor: c.sunrise, borderWidth: 1.5, borderColor: c.white },
 });
