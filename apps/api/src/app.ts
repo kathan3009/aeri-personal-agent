@@ -1,5 +1,6 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { z } from 'zod';
 import { Webhook } from 'svix';
 import { inventoryItemSchema } from '@personal-agent/core';
@@ -15,6 +16,7 @@ const compareToken = (expected: string, actual: string) => {
 export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOKEN ?? '') {
   const app = new Hono();
   const service = new AgentService(store);
+  if (process.env.NODE_ENV !== 'production') app.use('/v1/*', cors({ origin: origin => /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin) ? origin : '', allowHeaders: ['Authorization', 'Content-Type'], allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'] }));
   app.get('/health', c => c.json({ ok: true, service: 'aeri-api' }));
   app.onError((error, c) => {
     const message = error instanceof z.ZodError ? error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ') : error.message;

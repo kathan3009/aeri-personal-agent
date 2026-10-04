@@ -22,6 +22,8 @@ npm run dev:mobile
 
 Open the Expo QR code on a phone on the same Wi-Fi network (or use an emulator). Enter the API address shown by setup and the access code stored in the ignored root `.env`. The API address can be changed on the connection screen; `localhost` works only in a simulator on the same machine. On iOS Simulator use `http://localhost:8787`; on an Android emulator use `http://10.0.2.2:8787`.
 
+To inspect the same React Native screens locally without a device, run `npx expo start --web --host localhost` from `apps/mobile` and open the printed localhost URL. Connect to `http://127.0.0.1:8787` with the access code in `.env`. This browser build is a development preview; the delivered product remains the iOS/Android app. Preview credentials are kept in browser session storage, while iOS/Android use SecureStore. Device camera, microphone, phone calls, and native Liquid Glass still require a phone or simulator.
+
 Key-free mode supports chat commands such as `I have 3 eggs`, `We used 2 eggs`, and `My shirt size is medium`. Pasting a YouTube link creates a **clearly marked demo recipe** and a draft missing-ingredient cart. Uploading a kitchen video produces **clearly marked sample observations** for the confirmation UI. It does not pretend to understand the video without Gemini. Inventory, messages, tasks and events persist locally in ignored `.data/state.json`.
 
 ## Activate providers

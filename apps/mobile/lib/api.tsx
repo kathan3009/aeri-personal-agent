@@ -1,9 +1,14 @@
 import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { AppState } from '@personal-agent/core';
 
 type Providers = Record<'gemini' | 'neon' | 'aiGateway' | 'kernel' | 'exa' | 'vapi' | 'agentMail', boolean>;
 type Settings = { url: string; token: string };
+const settingsKey = 'aeri.settings';
+const getSavedSettings = () => Platform.OS === 'web' ? Promise.resolve(sessionStorage.getItem(settingsKey)) : SecureStore.getItemAsync(settingsKey);
+const saveSettings = (value: string) => Platform.OS === 'web' ? Promise.resolve(sessionStorage.setItem(settingsKey, value)) : SecureStore.setItemAsync(settingsKey, value);
+const clearSettings = () => Platform.OS === 'web' ? Promise.resolve(sessionStorage.removeItem(settingsKey)) : SecureStore.deleteItemAsync(settingsKey);
 type AppContextValue = {
   settings: Settings | null; state: AppState | null; providers: Providers | null; loading: boolean; error: string | null;
   phoneNumber: string | null;
@@ -37,7 +42,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch (cause) { setError((cause as Error).message); }
   }, [request, settings]);
   useEffect(() => { (async () => {
-    const saved = await SecureStore.getItemAsync('aeri.settings');
+    const saved = await getSavedSettings();
     if (saved) { try { setSettings(JSON.parse(saved)); } catch { /* reconnect manually */ } }
     setLoading(false);
   })(); }, []);
@@ -49,10 +54,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const json = await response.json();
     if (!response.ok) throw new Error(json.error ?? 'Could not connect');
     const next = { url: normalized, token: token.trim() };
-    await SecureStore.setItemAsync('aeri.settings', JSON.stringify(next));
+    await saveSettings(JSON.stringify(next));
     setSettings(next); setState(json.state); setProviders(json.providers); setPhoneNumber(json.phoneNumber); setError(null);
   }, []);
-  const disconnect = useCallback(async () => { await SecureStore.deleteItemAsync('aeri.settings'); setSettings(null); setState(null); setProviders(null); setPhoneNumber(null); }, []);
+  const disconnect = useCallback(async () => { await clearSettings(); setSettings(null); setState(null); setProviders(null); setPhoneNumber(null); }, []);
   const upload = useCallback(async <T,>(path: string, uri: string, kind: 'video' | 'audio', mimeType: string): Promise<T> => {
     const form = new FormData();
     const extension = kind === 'audio' ? 'm4a' : mimeType === 'video/quicktime' ? 'mov' : 'mp4';

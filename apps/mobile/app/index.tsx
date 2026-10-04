@@ -15,7 +15,7 @@ type Tab = 'agent' | 'memory' | 'tasks';
 function ConnectScreen() {
   const { connect } = useApp();
   const insets = useSafeAreaInsets();
-  const [url, setUrl] = useState(process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787');
+  const [url, setUrl] = useState(Platform.OS === 'web' ? 'http://127.0.0.1:8787' : process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787');
   const [token, setToken] = useState(''); const [busy, setBusy] = useState(false);
   const submit = async () => { try { setBusy(true); await connect(url, token); } catch (error) { Alert.alert('Could not connect', (error as Error).message); } finally { setBusy(false); } };
   return <LinearGradient colors={['#DFF3FC', '#F5FAFD', '#FFFFFF']} style={[styles.connect, { paddingTop: insets.top + 38, paddingBottom: insets.bottom + 25 }]}>
@@ -26,7 +26,7 @@ function ConnectScreen() {
       <Text style={styles.fieldLabel}>ACCESS CODE</Text><TextInput value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} secureTextEntry placeholder="Enter your private access code" placeholderTextColor="#9BAFBB" style={styles.connectInput} />
       <Pressable onPress={() => void submit()} disabled={busy} style={styles.connectButton}>{busy ? <ActivityIndicator color={c.white} /> : <Text style={styles.connectButtonText}>Continue with Aeri</Text>}</Pressable>
     </View>
-    <Text style={styles.connectFoot}>Access code stays in your phone's secure storage.</Text>
+    <Text style={styles.connectFoot}>{Platform.OS === 'web' ? 'Local preview keeps your access code for this browser session.' : "Access code stays in your phone's secure storage."}</Text>
   </LinearGradient>;
 }
 
