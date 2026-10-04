@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { Agent } from '@mastra/core/agent';
 import { createTool } from '@mastra/core/tools';
-import { approveCart, confirmScan, createCart, inventoryItemSchema, normalizeName, scaleRecipe, type Cart, type Recipe, type Scan } from '@personal-agent/core';
+import { approveCart, confirmScan, createCart, inventoryItemSchema, normalizeName, scaleRecipe, type AppState, type Cart, type Recipe, type Scan } from '@personal-agent/core';
 import { z } from 'zod';
 import { parseShoppingCommand } from './demo.js';
-import { prepareRetailerCheckout, researchProducts, understandKitchenVideo, understandRecipe } from './providers.js';
+import { prepareRetailerCheckout, researchProducts, understandKitchenVideo, understandRecipe, withProvider } from './providers.js';
 import type { Store } from './store.js';
 
 const id = () => randomUUID();
@@ -14,6 +14,10 @@ const youtubeUrl = (value: string): string | null => {
   if (!match) return null;
   try { const url = new URL(match[0].replace(/[).,!?]+$/, '')); return ['youtube.com','www.youtube.com','m.youtube.com','youtu.be','www.youtu.be'].includes(url.hostname) ? url.toString() : null; }
   catch { return null; }
+};
+
+const closeTask = (state: AppState, subjectId: string) => {
+  for (const task of state.tasks) if (task.subjectId === subjectId && task.status === 'needs_review') { task.status = 'done'; task.updatedAt = now(); }
 };
 
 export class AgentService {
@@ -30,8 +34,26 @@ export class AgentService {
     });
   }
 
+  async removeInventory(itemId: string) {
+    return this.store.update(state => {
+      const item = state.inventory.find(entry => entry.id === itemId);
+      if (!item) throw new Error('Item not found');
+      state.inventory = state.inventory.filter(entry => entry.id !== itemId);
+      state.events.push({ id: id(), type: 'inventory.removed', at: now(), data: { name: item.name } });
+      return item;
+    });
+  }
+
   async setPreference(key: string, value: string) {
     await this.store.update(state => { state.preferences[key] = value; state.events.push({ id: id(), type: 'preference.updated', at: now(), data: { key, value } }); });
+  }
+
+  async removePreference(key: string) {
+    await this.store.update(state => {
+      if (!(key in state.preferences)) throw new Error('Preference not found');
+      delete state.preferences[key];
+      state.events.push({ id: id(), type: 'preference.removed', at: now(), data: { key } });
+    });
   }
 
   async consumeInventory(name: string, amount: number) {
@@ -55,7 +77,7 @@ export class AgentService {
         const cart = createCart(recipe, state.inventory, now(), id);
         state.recipes.unshift(recipe); state.carts.unshift(cart);
         const task = state.tasks.find(t => t.id === taskId)!;
-        task.status = 'needs_review'; task.updatedAt = now(); task.detail = `${cart.items.length} ingredients to review`;
+        task.status = 'needs_review'; task.updatedAt = now(); task.detail = `${cart.items.length} ingredients to review`; task.subjectId = cart.id;
         state.events.push({ id: id(), type: 'recipe.created', at: now(), data: { recipeId: recipe.id, cartId: cart.id, source: recipe.source } });
         return { recipe, cart };
       });
@@ -70,7 +92,7 @@ export class AgentService {
     const scanId = id(), taskId = id();
     await this.store.update(state => {
       state.scans.unshift({ id: scanId, status: 'processing', source: process.env.GEMINI_API_KEY ? 'gemini' : 'demo', observations: [], createdAt: now() });
-      state.tasks.unshift({ id: taskId, kind: 'scan', title: 'Scan kitchen video', status: 'running', createdAt: now(), updatedAt: now() });
+      state.tasks.unshift({ id: taskId, kind: 'scan', title: 'Scan kitchen video', status: 'running', createdAt: now(), updatedAt: now(), subjectId: scanId });
     });
     try {
       const observations = await understandKitchenVideo(data, mimeType, id);
@@ -97,8 +119,7 @@ export class AgentService {
       if (index < 0) throw new Error('Scan not found');
       const result = confirmScan(state.scans[index], decisions, state.inventory, now(), id);
       state.scans[index] = result.scan; state.inventory = result.inventory;
-      const task = state.tasks.find(t => t.kind === 'scan' && t.status === 'needs_review');
-      if (task) { task.status = 'done'; task.updatedAt = now(); }
+      closeTask(state, scanId);
       state.events.push({ id: id(), type: 'scan.confirmed', at: now(), data: { scanId, accepted: Object.values(decisions).filter(d => d === 'accepted').length } });
       return result;
     });
@@ -109,6 +130,7 @@ export class AgentService {
       const index = state.carts.findIndex(c => c.id === cartId);
       if (index < 0) throw new Error('Cart not found');
       state.carts[index] = approveCart(state.carts[index], now());
+      closeTask(state, cartId);
       state.events.push({ id: id(), type: 'cart.approved', at: now(), data: { cartId } });
       return state.carts[index];
     });
@@ -154,17 +176,30 @@ export class AgentService {
       const item = state.carts.find(c => c.id === cartId)!;
       if (item.status !== 'approved') throw new Error('Cart status changed');
       item.status = 'checkout_ready'; item.checkoutUrl = checkout.url; item.updatedAt = now();
+      item.checkout = { mode: checkout.mode, note: checkout.note, sessionId: checkout.sessionId, openedAt: now() };
       state.events.push({ id: id(), type: 'checkout.opened', at: now(), data: { cartId, sessionId: checkout.sessionId } });
       return item;
     });
     return { cart: updated, ...checkout };
   }
 
+  async cancel(cartId: string) {
+    return this.store.update(state => {
+      const cart = state.carts.find(c => c.id === cartId);
+      if (!cart) throw new Error('Cart not found');
+      if (!['draft', 'approved', 'checkout_ready'].includes(cart.status)) throw new Error('Only a list that has not been ordered can be discarded');
+      cart.status = 'cancelled'; cart.updatedAt = now();
+      closeTask(state, cartId);
+      state.events.push({ id: id(), type: 'cart.cancelled', at: now(), data: { cartId } });
+      return cart;
+    });
+  }
+
   async markOrdered(cartId: string, reference: string) {
     return this.store.update(state => {
       const cart = state.carts.find(c => c.id === cartId);
       if (!cart || cart.status !== 'checkout_ready') throw new Error('Cart is not ready for order confirmation');
-      cart.status = 'ordered'; cart.orderReference = reference; cart.updatedAt = now();
+      cart.status = 'ordered'; cart.orderReference = reference.trim(); cart.updatedAt = now();
       state.events.push({ id: id(), type: 'order.placed', at: now(), data: { cartId, reference } });
       return cart;
     });
@@ -174,13 +209,14 @@ export class AgentService {
     return this.store.update(state => {
       const cart = state.carts.find(c => c.id === cartId);
       if (!cart || cart.status !== 'ordered') throw new Error('Only a placed order can be received');
-      const already = state.events.some(e => e.type === 'order.received' && (e.data as { cartId?: string }).cartId === cartId);
+      const already = cart.receivedAt || state.events.some(e => e.type === 'order.received' && (e.data as { cartId?: string }).cartId === cartId);
       if (already) throw new Error('Order was already received');
       for (const entry of cart.items) {
         const existing = state.inventory.find(i => normalizeName(i.name) === normalizeName(entry.name) && i.quantity.unit === entry.quantity.unit);
         if (existing) { existing.quantity.amount += entry.quantity.amount; existing.updatedAt = now(); existing.confidence = 'confirmed'; }
         else state.inventory.push({ id: id(), name: entry.name, quantity: entry.quantity, confidence: 'confirmed', updatedAt: now() });
       }
+      cart.receivedAt = now(); cart.updatedAt = cart.receivedAt;
       state.events.push({ id: id(), type: 'order.received', at: now(), data: { cartId } });
       return state.inventory;
     });
@@ -194,17 +230,23 @@ export class AgentService {
     let reply: string;
     if (parsed.kind === 'inventory' && parsed.key && parsed.value) {
       await this.addInventory(parsed.key, Number(parsed.value));
-      reply = `Got it — I added ${parsed.value} ${parsed.key} to your confirmed kitchen memory.`;
+      reply = `Got it. You have ${parsed.value} ${parsed.key}.`;
     } else if (parsed.kind === 'consume' && parsed.key && parsed.value) {
       const item = await this.consumeInventory(parsed.key, Number(parsed.value));
-      reply = `Updated — you have ${item.quantity.amount} ${item.name} left in memory.`;
+      reply = item.quantity.amount > 0 ? `Updated. You have ${item.quantity.amount} ${item.name} left.` : `Updated. You're out of ${item.name}.`;
     } else if (parsed.kind === 'preference' && parsed.key && parsed.value && (parsed.key !== 'note' || !process.env.NEON_AI_GATEWAY_API_KEY || !process.env.NEON_AI_GATEWAY_BASE_URL)) {
-      await this.setPreference(parsed.key, parsed.value);
-      reply = `I'll remember: ${parsed.key} = ${parsed.value}.`;
+      // Free-form notes accumulate instead of replacing one another.
+      const key = parsed.key === 'note' ? await this.store.read().then(state => { let n = 1; while (state.preferences[n === 1 ? 'note' : `note ${n}`]) n++; return n === 1 ? 'note' : `note ${n}`; }) : parsed.key;
+      await this.setPreference(key, parsed.value);
+      reply = parsed.key === 'note' ? `I'll remember that ${parsed.value}.` : `I'll remember your ${parsed.key}: ${parsed.value}.`;
     } else if (youtubeUrl(clean)) {
       const link = youtubeUrl(clean)!;
       const result = await this.recipeFromUrl(link);
-      reply = `I found ${result.recipe.title} and made a draft cart with ${result.cart.items.length} missing ingredients. Review it before I open checkout.`;
+      const count = result.cart.items.length;
+      const needs = count === 0 ? 'You already have everything it needs.' : `${count} ${count === 1 ? 'item is' : 'items are'} missing from your kitchen. Review the list in Tasks before I open a store.`;
+      reply = result.recipe.source === 'demo'
+        ? `I can't watch videos until video understanding is connected, so I made a sample recipe (${result.recipe.title}) to show the flow. ${needs}`
+        : `That's ${result.recipe.title}. ${needs}`;
     } else {
       reply = await this.askMastra(clean);
     }
@@ -215,7 +257,7 @@ export class AgentService {
   private async askMastra(prompt: string): Promise<string> {
     const key = process.env.NEON_AI_GATEWAY_API_KEY;
     const base = process.env.NEON_AI_GATEWAY_BASE_URL;
-    if (!key || !base) return 'I can remember what you have, save preferences, and turn a YouTube recipe into a shopping list. Try “I have 3 eggs” or paste a recipe link. Add Neon AI Gateway keys for open-ended conversation.';
+    if (!key || !base) return 'I can keep track of what you have, remember preferences like sizes and stores, and turn a YouTube recipe into a shopping list. Try “I have 6 eggs” or paste a recipe link. Open-ended conversation turns on once a language model is connected in Settings.';
     const store = this.store;
     const service = this;
     const agent = new Agent({
@@ -231,7 +273,7 @@ export class AgentService {
       },
     });
     const history = (await store.read()).messages.slice(-10).map(message => `${message.role}: ${message.content}`).join('\n');
-    const result = await agent.generate(`Recent conversation:\n${history}\n\nCurrent user request: ${prompt}`, { maxSteps: 6 });
+    const result = await withProvider('Neon AI Gateway', () => agent.generate(`Recent conversation:\n${history}\n\nCurrent user request: ${prompt}`, { maxSteps: 6 }));
     return result.text || 'I could not complete that request. Please try again.';
   }
 

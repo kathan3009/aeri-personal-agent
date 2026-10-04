@@ -4,7 +4,7 @@ import { cors } from 'hono/cors';
 import { z } from 'zod';
 import { Webhook } from 'svix';
 import { inventoryItemSchema } from '@personal-agent/core';
-import { providerStatus, transcribeAudio } from './providers.js';
+import { ProviderError, providerStatus, scrub, transcribeAudio } from './providers.js';
 import { AgentService } from './service.js';
 import type { Store } from './store.js';
 
@@ -19,7 +19,8 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
   if (process.env.NODE_ENV !== 'production') app.use('/v1/*', cors({ origin: origin => /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin) ? origin : '', allowHeaders: ['Authorization', 'Content-Type'], allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'] }));
   app.get('/health', c => c.json({ ok: true, service: 'aeri-api' }));
   app.onError((error, c) => {
-    const message = error instanceof z.ZodError ? error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ') : error.message;
+    if (error instanceof ProviderError) return c.json({ error: error.message, provider: error.provider }, 502);
+    const message = error instanceof z.ZodError ? error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ') : scrub(error.message);
     const status = /not found/i.test(message) ? 404 : /failed|could not|needs|not configured/i.test(message) ? 503 : 400;
     return c.json({ error: message }, status);
   });
@@ -42,11 +43,13 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
     const body = z.object({ name: z.string().min(1), amount: z.number().positive(), unit: inventoryItemSchema.shape.quantity.shape.unit }).parse(await c.req.json());
     return c.json(await service.addInventory(body.name, body.amount, body.unit));
   });
+  app.delete('/v1/inventory/:id', async c => c.json(await service.removeInventory(c.req.param('id'))));
   app.post('/v1/preferences', async c => {
     const body = z.object({ key: z.string().min(1), value: z.string().min(1) }).parse(await c.req.json());
     await service.setPreference(body.key, body.value);
     return c.json({ ok: true });
   });
+  app.delete('/v1/preferences/:key', async c => { await service.removePreference(c.req.param('key')); return c.json({ ok: true }); });
   app.post('/v1/scans', async c => {
     const form = await c.req.formData();
     const file = form.get('video');
@@ -65,9 +68,10 @@ export function createApp(store: Store, accessToken = process.env.APP_ACCESS_TOK
   });
   app.delete('/v1/carts/:id/items/:itemId', async c => c.json(await service.removeCartItem(c.req.param('id'), c.req.param('itemId'))));
   app.post('/v1/carts/:id/research', async c => c.json(await service.researchCart(c.req.param('id'))));
+  app.post('/v1/carts/:id/cancel', async c => c.json(await service.cancel(c.req.param('id'))));
   app.post('/v1/carts/:id/checkout', async c => c.json(await service.checkout(c.req.param('id'))));
   app.post('/v1/carts/:id/ordered', async c => {
-    const { reference } = z.object({ reference: z.string().min(1) }).parse(await c.req.json());
+    const { reference } = z.object({ reference: z.string().trim().min(1).max(80) }).parse(await c.req.json());
     return c.json(await service.markOrdered(c.req.param('id'), reference));
   });
   app.post('/v1/carts/:id/received', async c => c.json(await service.markReceived(c.req.param('id'))));

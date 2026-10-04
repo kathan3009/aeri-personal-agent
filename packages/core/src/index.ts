@@ -27,6 +27,9 @@ export const cartSchema = z.object({
   id: z.string(), recipeId: z.string(), items: z.array(cartItemSchema),
   status: z.enum(['draft', 'approved', 'checkout_ready', 'ordered', 'cancelled']),
   approvedAt: z.string().optional(), checkoutUrl: z.string().url().optional(), orderReference: z.string().optional(),
+  // How the store was opened: `manual` means the user adds items themselves; `kernel` is a hosted browser session.
+  checkout: z.object({ mode: z.enum(['manual', 'kernel']), note: z.string(), sessionId: z.string().optional(), openedAt: z.string() }).optional(),
+  receivedAt: z.string().optional(),
   createdAt: z.string(), updatedAt: z.string(),
 });
 export type Cart = z.infer<typeof cartSchema>;
@@ -50,6 +53,8 @@ export const taskSchema = z.object({
   id: z.string(), kind: z.enum(['recipe', 'scan', 'cart', 'voice', 'receipt']), title: z.string(),
   status: z.enum(['running', 'needs_review', 'done', 'failed']),
   createdAt: z.string(), updatedAt: z.string(), detail: z.string().optional(),
+  // The cart or scan this task is about, so finishing that work closes the right task.
+  subjectId: z.string().optional(),
 });
 export type Task = z.infer<typeof taskSchema>;
 export const appStateSchema = z.object({

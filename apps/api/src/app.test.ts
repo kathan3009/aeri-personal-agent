@@ -29,6 +29,7 @@ describe('authenticated household flow', () => {
     expect((await app.request(`/v1/carts/${recipe.cart.id}/checkout`, { method: 'POST', headers: auth })).status).toBe(400);
     const approved = await json(await app.request(`/v1/carts/${recipe.cart.id}/approve`, { method: 'POST', headers: auth }));
     expect(approved.status).toBe('approved');
+    expect((await json(await app.request('/v1/bootstrap', { headers: auth }))).state.tasks.find((task: any) => task.subjectId === recipe.cart.id).status).toBe('done');
     expect((await app.request(`/v1/carts/${recipe.cart.id}/approve`, { method: 'POST', headers: auth })).status).toBe(400);
     const bootstrap = await json(await app.request('/v1/bootstrap', { headers: auth }));
     expect(bootstrap.state.carts[0].status).toBe('approved');
@@ -83,6 +84,77 @@ describe('authenticated household flow', () => {
       expect(state.tasks.filter((task: any) => task.kind === 'receipt')).toHaveLength(1);
       expect((await app.request('/webhooks/agentmail', { method: 'POST', headers: { ...headers, 'svix-signature': 'bad' }, body: payload })).status).toBe(401);
     } finally { if (old === undefined) delete process.env.AGENTMAIL_WEBHOOK_SECRET; else process.env.AGENTMAIL_WEBHOOK_SECRET = old; }
+  });
+
+  it('walks an approved cart through store handoff, order reference and delivery without skipping a step', async () => {
+    const app = await setup();
+    const post = (path: string, body?: unknown) => app.request(path, { method: 'POST', headers: auth, body: body ? JSON.stringify(body) : undefined });
+    await post('/v1/inventory', { name: 'Garlic', amount: 3, unit: 'each' });
+    const chat = await json(await post('/v1/chat', { text: 'Make this https://youtu.be/abc123' }));
+    expect(chat.reply).toMatch(/sample recipe/);
+    let state = (await json(await app.request('/v1/bootstrap', { headers: auth }))).state;
+    const cart = state.carts[0];
+    expect(state.recipes[0].title).not.toMatch(/demo/i);
+    expect(cart.items.map((item: any) => item.name)).not.toContain('Garlic');
+    expect((await post(`/v1/carts/${cart.id}/ordered`, { reference: 'A-1' })).status).toBe(400);
+    await post(`/v1/carts/${cart.id}/approve`);
+    const checkout = await json(await post(`/v1/carts/${cart.id}/checkout`));
+    expect(checkout.mode).toBe('manual');
+    expect(checkout.cart.checkout).toMatchObject({ mode: 'manual' });
+    expect(checkout.cart.status).toBe('checkout_ready');
+    expect((await post(`/v1/carts/${cart.id}/received`)).status).toBe(400);
+    expect((await post(`/v1/carts/${cart.id}/ordered`, { reference: '   ' })).status).toBe(400);
+    const ordered = await json(await post(`/v1/carts/${cart.id}/ordered`, { reference: '  IC-48213  ' }));
+    expect(ordered.orderReference).toBe('IC-48213');
+    expect((await post(`/v1/carts/${cart.id}/cancel`)).status).toBe(400);
+    await post(`/v1/carts/${cart.id}/received`);
+    state = (await json(await app.request('/v1/bootstrap', { headers: auth }))).state;
+    expect(state.carts[0].receivedAt).toBeTruthy();
+    expect(state.inventory.find((item: any) => item.name === 'Pasta').quantity).toEqual({ amount: 250, unit: 'g' });
+    expect((await post(`/v1/carts/${cart.id}/received`)).status).toBe(400);
+  });
+
+  it('discards an unordered list and removes a remembered item', async () => {
+    const app = await setup();
+    const post = (path: string, body?: unknown) => app.request(path, { method: 'POST', headers: auth, body: body ? JSON.stringify(body) : undefined });
+    const { cart } = await json(await post('/v1/recipes', { url: 'https://www.youtube.com/watch?v=demo' }));
+    expect((await json(await post(`/v1/carts/${cart.id}/cancel`))).status).toBe('cancelled');
+    expect((await post(`/v1/carts/${cart.id}/approve`)).status).toBe(400);
+    const item = await json(await post('/v1/inventory', { name: 'Milk', amount: 1, unit: 'l' }));
+    expect((await app.request(`/v1/inventory/${item.id}`, { method: 'DELETE', headers: auth })).status).toBe(200);
+    expect((await json(await app.request('/v1/bootstrap', { headers: auth }))).state.inventory).toEqual([]);
+    expect((await app.request(`/v1/inventory/${item.id}`, { method: 'DELETE', headers: auth })).status).toBe(404);
+    await post('/v1/preferences', { key: 'shirt size', value: 'M' });
+    expect((await app.request(`/v1/preferences/${encodeURIComponent('shirt size')}`, { method: 'DELETE', headers: auth })).status).toBe(200);
+    expect((await json(await app.request('/v1/bootstrap', { headers: auth }))).state.preferences).toEqual({});
+  });
+
+  it('keeps separate free-form notes instead of overwriting them', async () => {
+    const app = await setup();
+    const say = (text: string) => app.request('/v1/chat', { method: 'POST', headers: auth, body: JSON.stringify({ text }) });
+    await say('Remember that we avoid peanuts');
+    await say('Remember that our favorite store is Trader Joe’s');
+    const preferences = (await json(await app.request('/v1/bootstrap', { headers: auth }))).state.preferences;
+    expect(Object.values(preferences)).toEqual(['we avoid peanuts', 'our favorite store is Trader Joe’s']);
+  });
+
+  it('reports a gateway failure by provider without leaking the key', async () => {
+    const priorKey = process.env.NEON_AI_GATEWAY_API_KEY, priorBase = process.env.NEON_AI_GATEWAY_BASE_URL;
+    process.env.NEON_AI_GATEWAY_API_KEY = 'gateway-secret-value-123';
+    process.env.NEON_AI_GATEWAY_BASE_URL = 'https://gateway.example';
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ error: { message: 'Invalid API key gateway-secret-value-123' } }), { status: 401, headers: { 'Content-Type': 'application/json' } }));
+    try {
+      const app = await setup();
+      const response = await app.request('/v1/chat', { method: 'POST', headers: auth, body: JSON.stringify({ text: 'What should I cook tonight?' }) });
+      const body = await json(response);
+      expect(response.status).toBe(502);
+      expect(body.provider).toBe('Neon AI Gateway');
+      expect(body.error).toMatch(/^Neon AI Gateway: /);
+      expect(body.error).not.toContain('gateway-secret-value-123');
+    } finally {
+      if (priorKey === undefined) delete process.env.NEON_AI_GATEWAY_API_KEY; else process.env.NEON_AI_GATEWAY_API_KEY = priorKey;
+      if (priorBase === undefined) delete process.env.NEON_AI_GATEWAY_BASE_URL; else process.env.NEON_AI_GATEWAY_BASE_URL = priorBase;
+    }
   });
 
   it('runs the Mastra agent through a custom OpenAI-compatible gateway', async () => {
