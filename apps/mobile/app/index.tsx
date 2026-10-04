@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Animated, Keyboard, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SymbolView, type SFSymbol } from 'expo-symbols';
-import { CircleAlert, House, ListChecks, LogOut, Phone, RotateCw, Sparkles } from 'lucide-react-native';
+import { CircleAlert, House, ListChecks, LogOut, RotateCw, Sparkles } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AgentTab } from '../components/AgentTab';
 import { MemoryTab } from '../components/MemoryTab';
@@ -58,21 +58,20 @@ function ConnectScreen() {
   </View>;
 }
 
-const capabilityRows = (p: Record<string, boolean> | null, phone: string | null): Array<{ title: string; ready: boolean; detail: string }> => [
+const capabilityRows = (p: Record<string, boolean> | null): Array<{ title: string; ready: boolean; detail: string }> => [
   { title: 'Kitchen memory and lists', ready: true, detail: 'Ready' },
   { title: 'Open conversation', ready: !!p?.aiGateway, detail: p?.aiGateway ? 'Ready, through Neon AI Gateway' : 'Simple commands only until Neon AI Gateway is connected' },
   { title: 'Recipe videos', ready: !!p?.gemini, detail: p?.gemini ? 'Reads the actual video with Gemini' : 'Shows a sample recipe until Gemini is connected' },
   { title: 'Kitchen videos', ready: !!p?.gemini, detail: p?.gemini ? 'Reads the actual video with Gemini' : 'Shows sample items until Gemini is connected' },
-  { title: 'Voice notes', ready: !!p?.gemini, detail: p?.gemini ? 'Ready' : 'Needs Gemini' },
+  { title: 'In-app voice', ready: !!p?.gemini, detail: p?.gemini ? 'Ready' : 'Needs Gemini' },
   { title: 'Store checkout', ready: !!p?.kernel, detail: p?.kernel ? 'Opens a private Kernel browser' : 'Opens the store’s site; you add the items' },
   { title: 'Product links', ready: !!p?.exa, detail: p?.exa ? 'Ready, through Exa' : 'Needs Exa' },
-  { title: 'Phone line', ready: !!p?.vapi, detail: p?.vapi && phone ? phone : 'Needs Vapi' },
   { title: 'Receipts by email', ready: !!p?.agentMail, detail: p?.agentMail ? 'Ready, through AgentMail' : 'Needs AgentMail' },
   { title: 'Storage', ready: true, detail: p?.neon ? 'Neon Postgres' : 'On the computer running Aeri' },
 ];
 
 function SettingsSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
-  const { settings, providers, phoneNumber, error, refresh, disconnect } = useApp();
+  const { settings, providers, error, refresh, disconnect } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   return <Sheet visible={visible} onClose={onClose} title="Settings">
     <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
@@ -83,9 +82,8 @@ function SettingsSheet({ visible, onClose }: { visible: boolean; onClose: () => 
       </Group>
       <Text style={[t.footnote, styles.sheetLabel]}>What Aeri can do right now</Text>
       <Group style={styles.sheetGroup} inset={36}>
-        {capabilityRows(providers, phoneNumber).map(row => <Row key={row.title} title={row.title} subtitle={row.detail} left={<Dot color={row.ready ? c.leaf : 'rgba(15,43,64,0.18)'} />} />)}
+        {capabilityRows(providers).map(row => <Row key={row.title} title={row.title} subtitle={row.detail} left={<Dot color={row.ready ? c.leaf : 'rgba(15,43,64,0.18)'} />} />)}
       </Group>
-      {phoneNumber && <Button label="Call Aeri" icon={Phone} tone="secondary" onPress={() => void Linking.openURL(`tel:${phoneNumber}`)} style={{ marginTop: 18 }} />}
       <Button label="Disconnect this device" icon={LogOut} tone="destructive" onPress={() => { onClose(); void disconnect(); }} style={{ marginTop: 10 }} />
     </ScrollView>
   </Sheet>;
@@ -98,7 +96,7 @@ function Unreachable() {
   return <View style={[styles.center, { paddingTop: insets.top }]}>
     <Aura size={56} mode={busy ? 'thinking' : 'idle'} />
     <Text style={[t.title2, { marginTop: 24, textAlign: 'center' }]}>Can't reach Aeri</Text>
-    <Text style={[t.subhead, { marginTop: 8, textAlign: 'center', maxWidth: 300 }]}>{error?.replace(/^Can't reach Aeri\.\s*/, '')}</Text>
+    <Text style={[t.subhead, { marginTop: 8, textAlign: 'center', maxWidth: 300 }]}>{error?.replace(/^Can't reach Aeri(?: at (\S+))?\.\s*/, (_, where) => where ? `No answer from ${where}. ` : '')}</Text>
     <Button label="Try again" onPress={async () => { setBusy(true); await refresh(); setBusy(false); }} loading={busy} style={{ marginTop: 28, alignSelf: 'stretch' }} />
     <Button label="Change server" tone="plain" onPress={() => void disconnect()} style={{ marginTop: 6 }} />
   </View>;
