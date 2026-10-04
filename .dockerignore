@@ -1,0 +1,10 @@
+node_modules
+.git
+.env
+.env.local
+.data
+.expo
+dist
+*.log
+apps/mobile/**
+!apps/mobile/package.json

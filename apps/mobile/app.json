@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "Aeri", "slug": "aeri-agent", "scheme": "aeri", "version": "0.1.0", "orientation": "portrait", "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light", "backgroundColor": "#EFF8FD",
+    "ios": {"supportsTablet": false, "bundleIdentifier": "com.kathan3009.aeri", "infoPlist": {"NSCameraUsageDescription": "Scan your kitchen to update what you have.", "NSMicrophoneUsageDescription": "Talk to your personal agent.", "NSPhotoLibraryUsageDescription": "Choose a kitchen video for your agent."}},
+    "android": {"package": "com.kathan3009.aeri", "permissions": ["CAMERA", "RECORD_AUDIO"]},
+    "plugins": ["expo-router", "expo-camera", ["expo-image-picker", {"photosPermission": "Choose a kitchen video for your agent."}], ["expo-audio", {"microphonePermission": "Talk to your personal agent."}], "expo-secure-store"],
+    "experiments": {"typedRoutes": true}
+  }
+}
