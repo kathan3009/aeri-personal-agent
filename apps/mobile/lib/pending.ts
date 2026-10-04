@@ -31,6 +31,7 @@ export function pendingFor(state: AppState | null): Pending[] {
     if (cart.status === 'checkout_ready') list.push(cart.checkout?.status === 'preparing' ? { key: cart.id, tab: 'tasks', title: 'Filling your store cart', detail: name, quiet: true } : { key: cart.id, tab: 'tasks', title: 'Add your order number', detail: `After you pay for ${name}` });
     if (cart.status === 'ordered') list.push({ key: cart.id, tab: 'tasks', title: 'Waiting for delivery', detail: `Tap when ${name} arrives`, quiet: true });
   }
+  for (const task of state.tasks.filter(task => task.kind === 'receipt' && task.status === 'needs_review')) list.push({ key: task.id, tab: 'tasks', title: 'Review receipt evidence', detail: task.detail ?? 'Check your order and what arrived' });
   return list.sort((a, b) => Number(!!a.quiet) - Number(!!b.quiet));
 }
 

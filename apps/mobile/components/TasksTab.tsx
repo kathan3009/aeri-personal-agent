@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Check, ChevronDown, Clapperboard, Ellipsis, ExternalLink, PackageCheck, Search, Store, Trash, X } from 'lucide-react-native';
-import { covers, normalizeName, type AppState, type Basket, type Cart, type Proposal, type Recipe } from '@personal-agent/core';
+import { covers, deliveredQuantity, normalizeName, type AppState, type Basket, type Cart, type Proposal, type Recipe } from '@personal-agent/core';
 import { useApp } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
 import { haptic } from '../lib/haptics';
@@ -56,9 +56,9 @@ const basketDetail = (b: Basket) => [
 ].filter(Boolean).join(' · ');
 
 /** The store comparison inside a draft list: all-in totals, the reason for the pick, and one tap to choose. */
-function StoreChoice({ cart, proposal, busy, onChoose }: { cart: Cart; proposal: Proposal; busy: boolean; onChoose: (basket: Basket) => void }) {
+function StoreChoice({ cart, proposal, busy, onChoose, onRetry }: { cart: Cart; proposal: Proposal; busy: boolean; onRetry: () => void; onChoose: (basket: Basket) => void }) {
   if (proposal.status === 'searching') return <View style={styles.note}><Shimmer style={[t.subhead, { color: c.ink }]}>Checking prices at stores…</Shimmer><Text style={[t.footnote, { marginTop: 4 }]}>Reading each store’s own product page. This can take a minute.</Text></View>;
-  if (proposal.status === 'failed') return <View style={styles.note}><Text style={[t.subhead, { color: c.ember }]}>{proposal.error ?? 'The comparison failed'}</Text></View>;
+  if (proposal.status === 'failed') return <View style={styles.note}><Text style={[t.subhead, { color: c.ember }]}>{proposal.error ?? 'The comparison failed'}</Text><Button label="Retry comparison" tone="secondary" loading={busy} onPress={onRetry} style={{ marginTop: 10 }} /></View>;
   const recommended = proposal.baskets.find(b => b.id === proposal.recommendedId);
   return <View style={{ marginTop: 16 }}>
     <View style={styles.choiceHead}>
@@ -97,7 +97,7 @@ function DeliverySheet({ cart, visible, onClose, onConfirm, busy }: { cart: Cart
           accessibilityRole="checkbox" accessibilityState={{ checked: !missing[item.id] }} accessibilityLabel={`${item.name} arrived`}>
           <View style={[styles.radio, !missing[item.id] && styles.radioOn]}>{!missing[item.id] && <Check size={13} color={c.white} strokeWidth={3} />}</View>
           <Text style={[t.callout, { flex: 1, color: missing[item.id] ? c.ink3 : c.ink }]}>{titleCase(item.name)}</Text>
-          <Text style={[t.number, { fontSize: 15 }]}>{quantity(item.quantity)}</Text>
+          <Text style={[t.number, { fontSize: 15 }]}>{quantity(deliveredQuantity(item))}</Text>
         </Pressable>)}
       </Group>
     </ScrollView>
@@ -114,12 +114,14 @@ function CartCard({ cart }: { cart: Cart }) {
   const [suggestions, setSuggestions] = useState<Suggestions | null>(null);
   const [skipCompare, setSkipCompare] = useState(false);
   const [delivery, setDelivery] = useState(false);
+  const [checkoutCheck, setCheckoutCheck] = useState<{ matches: boolean; discrepancies: string[] } | null>(null);
   if (!state) return null;
   const recipe = cart.recipeId ? state.recipes.find(r => r.id === cart.recipeId) : undefined;
   const proposal = state.proposals.find(p => p.cartId === cart.id);
   const received = isReceived(state, cart);
   const step = stepOf(cart, received);
   const draft = cart.status === 'draft';
+  const approvalActive = cart.purchaseApproval?.status === 'active' && Date.parse(cart.purchaseApproval.expiresAt) > Date.now();
   const title = cartTitle(state, cart);
   const act = async <T,>(path: string, body?: unknown, method = 'POST'): Promise<T | null> => {
     try { setBusy(path); const result = await request<T>(`/v1/carts/${cart.id}/${path}`, { method: path.startsWith('items/') ? 'DELETE' : method, body: body ? JSON.stringify(body) : undefined }); await refresh(); return result; }
@@ -196,7 +198,7 @@ function CartCard({ cart }: { cart: Cart }) {
     {draft && <>
       {cart.items.length > 0 ? list : <Text style={[t.callout, { marginTop: 16 }]}>You already have everything for this recipe.</Text>}
       {recipe && <FromKitchen state={state} recipe={recipe} cart={cart} />}
-      {cart.items.length > 0 && cart.origin !== 'photo' && proposal && <StoreChoice cart={cart} proposal={proposal} busy={!!busy} onChoose={basket => void act('choose', { basketId: basket.id })} />}
+      {cart.items.length > 0 && cart.origin !== 'photo' && proposal && <StoreChoice cart={cart} proposal={proposal} busy={!!busy} onChoose={basket => void act('choose', { basketId: basket.id })} onRetry={() => void act('compare', { live: proposal.source !== 'fixture' })} />}
       {cart.items.length > 0 && (canApprove
         ? <><HoldButton label={approveLabel} accessibilityLabel={approveLabel.replace('Hold to approve', 'Approve')} disabled={!!busy} style={{ marginTop: 18 }}
             onConfirm={async () => { const ok = !!(await act('approve')); if (ok) toast('Approved. Next, open the store.', 'success'); return ok; }} />
@@ -227,6 +229,15 @@ function CartCard({ cart }: { cart: Cart }) {
         </View>}
       {disclosure(cart.checkout?.mode === 'kernel' ? `${items(cart.items.length)} approved` : `${items(cart.items.length)} to add at the store`)}
       {cart.checkout?.status !== 'preparing' && cart.checkoutUrl && <Button label={cart.checkout?.mode === 'kernel' ? 'Review the store cart' : 'Open the store in Aeri'} icon={ExternalLink} tone="secondary" onPress={() => void reviewStore()} loading={busy === 'review'} style={{ marginTop: 12 }} />}
+      {cart.checkout?.mode === 'kernel' && <Button label="Check final checkout" tone="plain" loading={busy === 'summary'} onPress={async () => { const result = await act<{ matches: boolean; discrepancies: string[] }>('summary', undefined, 'GET'); if (result) setCheckoutCheck(result); }} style={{ marginTop: 6 }} />}
+      {checkoutCheck?.discrepancies.map(note => <Text key={note} style={[t.footnote, { color: c.ember, marginTop: 8 }]}>{note}</Text>)}
+      {cart.checkoutSnapshot && <Group style={[styles.inner, { marginTop: 12 }]}>
+        <Row title="Final total" subtitle={`${cart.checkoutSnapshot.fulfillment === 'pickup' ? 'Pickup' : 'Delivery'} · Includes observed fees, tax and tip`} right={<Text style={t.headline}>{dollars(cart.checkoutSnapshot.totalCents)}</Text>} />
+        <Row title="Location" subtitle={cart.checkoutSnapshot.locationKey} />
+        <Row title="Fees / tax / tip" right={<Text style={t.footnote}>{dollars(cart.checkoutSnapshot.feesCents)} / {dollars(cart.checkoutSnapshot.taxCents)} / {dollars(cart.checkoutSnapshot.tipCents)}</Text>} />
+      </Group>}
+      {checkoutCheck?.matches && cart.checkoutSnapshot && !approvalActive && <HoldButton label={`Approve final ${dollars(cart.checkoutSnapshot.totalCents)}`} accessibilityLabel="Approve reviewed final checkout" onConfirm={async () => !!(await act('purchase-approval', { snapshotId: cart.checkoutSnapshot!.id, maximumTotalCents: cart.checkoutSnapshot!.totalCents }))} disabled={!!busy} style={{ marginTop: 12 }} />}
+      {approvalActive && cart.purchaseApproval && <Text style={[t.footnote, { marginTop: 8, color: c.leaf }]}>Reviewed until {new Date(cart.purchaseApproval.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. Complete payment yourself in the store.</Text>}
       <Group style={[styles.inner, { marginTop: 14 }]}><Field label="Order number" value={reference} onChangeText={setReference} placeholder="From the store's confirmation" autoCapitalize="characters" autoCorrect={false} returnKeyType="done" /></Group>
       <Button label="Save order number" disabled={!reference.trim()} loading={busy === 'ordered'} onPress={async () => { if (await act('ordered', { reference: reference.trim() })) { haptic.success(); setReference(''); } }} style={{ marginTop: 14 }} />
     </>}
@@ -260,7 +271,7 @@ export function TasksTab() {
   const searches = (state?.photoSearches ?? []).filter(s => !s.cartId && s.status !== 'failed').slice(0, 2);
   const failedSearch = (state?.photoSearches ?? []).find(s => s.status === 'failed' && Date.now() - new Date(s.updatedAt).getTime() < 3_600_000);
   const activity = (state?.tasks ?? []).filter(task => task.status === 'running' && task.kind !== 'photo' && task.kind !== 'compare' || task.status === 'failed' && task.kind !== 'photo' || (task.kind === 'receipt' && task.status === 'needs_review')).slice(0, 4);
-  const nothing = !active.length && !searches.length && !failedSearch;
+  const nothing = !active.length && !searches.length && !failedSearch && !activity.length;
   return <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + 24 }]} showsVerticalScrollIndicator={false} automaticallyAdjustKeyboardInsets keyboardShouldPersistTaps="handled">
     <LargeHeader title="Tasks" subtitle="Nothing is bought without your OK." />
     {nothing && <Reveal from="scale" style={styles.empty}>

@@ -9,6 +9,7 @@ import { useNav } from '../lib/nav';
 import { c, quantity, radius, t, titleCase } from '../lib/theme';
 import { LargeHeader } from './Header';
 import { MapCard } from './MapReview';
+import { StoreConnections } from './StoreConnections';
 import { Button, Field, Group, Row, SectionHeader, Sheet } from './ui';
 
 const units: Array<{ unit: Unit; label: string }> = [{ unit: 'each', label: 'Count' }, { unit: 'g', label: 'g' }, { unit: 'kg', label: 'kg' }, { unit: 'ml', label: 'ml' }, { unit: 'l', label: 'L' }, { unit: 'cup', label: 'cups' }];
@@ -145,6 +146,7 @@ export function MemoryTab() {
         {!preferences.length && preferenceIdeas.map(idea => <Row key={idea.key} title={titleCase(idea.key)} subtitle={idea.hint} tone="muted" onPress={() => setPreference({ key: idea.key, value: '', fixed: true })}
           left={<View style={styles.addIcon}><Plus size={15} color={c.accent} strokeWidth={2.4} /></View>} accessibilityLabel={`Add ${idea.key}`} />)}
       </Group>
+      <StoreConnections />
     </ScrollView>
     <ItemSheet item={item} onClose={() => setItem(null)} />
     <PreferenceSheet draft={preference} onClose={() => setPreference(null)} />

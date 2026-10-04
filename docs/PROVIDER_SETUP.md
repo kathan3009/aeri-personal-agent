@@ -1,71 +1,75 @@
-# Provider activation checklist
+# Provider activation and verification
 
-All secrets go in the root `.env` (ignored by Git) or a deployment secret manager. Run `npm run setup:local` once; it keeps existing files. The phone needs only the API address and the private access code. Restart `npm run dev:api` after changing `.env`. Settings (the person icon) lists which capabilities are live and which use labeled samples.
+All secrets belong in the ignored root `.env` or a server secret manager. The phone needs only the public API origin and private access code. Restart the API after configuration changes. No secret belongs in `EXPO_PUBLIC_*`, screenshots, prompts, logs or tracked files.
 
-## 1. Gemini (primary video, photo and voice perception)
+## Current configuration — October 4, 2026
 
-Set `GEMINI_API_KEY`. The defaults are `GEMINI_VIDEO_MODEL=gemini-3.8-flash` and `GEMINI_AUDIO_MODEL=gemini-3.5-transcribe`; both are listed as stable on Google's models page as of October 4. Direct Gemini bills to its own Google account and does not use Neon credit, so set a budget in Google AI Studio first.
+Neon Gateway, Exa and Kernel are configured locally. Direct Gemini and AgentMail webhook credentials remain absent. For Expo Go, run with `DATABASE_URL=` so the configured Neon URL cannot activate card-backed compute. No Fly deployment or live Postgres migration has occurred.
 
-How Aeri calls it (`apps/api/src/perception.ts`):
-- **Phone clips:** `models.generateContent` with the video sent inline at 2 frames a second. Clips over 18 MB are first re-encoded with ffmpeg to 480p and 2 fps with mono speech (a 40 s 1080p clip becomes under 1 MB). Without ffmpeg, the Files API is used.
-- **YouTube links:** passed as `fileData.fileUri`.
-- **Photos:** sent inline.
-- **Uploads:** any uploaded file is deleted afterwards.
+## Neon AI Gateway — active
 
-**First live test:**
-1. Record a 20–40 second clip of one shelf in good light, saying aloud anything hard to see.
-2. Check that every item has a timestamp, that the evidence frames match, that nothing hidden was listed, and that unclear labels ask for a close-up.
-3. Then try one gallery MP4 and one public YouTube recipe.
+The branch-scoped credential created with the owner’s consent permits `ai_gateway:invoke` only. It lives solely in ignored `.env`. Configure a bare `NEON_AI_GATEWAY_BASE_URL` without `/v1`; Mastra uses `/v1/chat/completions` with `NEON_AI_GATEWAY_MODEL=gpt-5-4-mini`.
 
-## 2. Neon AI Gateway
+The native Gemini route is `POST $BASE/gemini/v1beta/models/<model>:generateContent`, authenticated by the Neon bearer credential. `NEON_AI_GATEWAY_VISION_MODEL=gemini-3-6-flash` is configured. This is model access through a Neon credential, not a separate Google Gemini API key.
 
-**Conversation.** Set `NEON_AI_GATEWAY_API_KEY` (or `NEON_AI_GATEWAY_TOKEN`, the name Neon injects) and the bare `NEON_AI_GATEWAY_BASE_URL` (no `/v1`). Keep `NEON_AI_GATEWAY_MODEL=gpt-5-mini` unless your Gateway's `GET /v1/models` lists something else. Mastra uses the OpenAI-compatible `/v1/chat/completions` route. Test one open question in the app.
+Live verification on October 4:
 
-**Video and photos on Gateway credit: not yet verified.**
-- **What Neon documents:** a native Gemini route, `POST $BASE/gemini/v1beta/models/<model>:generateContent`. Only `generateContent` and `streamGenerateContent` are supported, so the Files API is not.
-- **What is inferred, not tested:** inline video and YouTube URLs probably work. The backing Databricks Gateway documents a 4 MB request limit, which is why Aeri re-encodes clips first.
+- HTTP 200 for a generated 3-second inline MP4 at 2 fps, a synthetic PNG and a short public YouTube input.
+- The actual Google SDK/native route returned a valid household-map schema with zero household objects for the synthetic pattern, and a photo specification describing the pattern.
+- Generated spoken M4A transcribed exactly as “I have six eggs in the fridge.” The authenticated voice route then saved the six eggs.
+- Mastra’s live tool loop saved a brand preference and created a requested milk-and-shirts shopping draft.
+- The Gateway Files route returned 404. No Files API fallback is used through Gateway.
 
-To test it:
-1. Set `NEON_AI_GATEWAY_VISION_MODEL` to a Gemini ID listed by your Gateway (hyphenated, for example `gemini-3-6-flash`).
-2. Run `npm run probe:gateway-video`. It sends one 3-second generated clip inline and one short public YouTube URL, checks the Files route, and prints only HTTP statuses and short answers.
-3. Only if the inline test passes, set `NEON_AI_GATEWAY_VIDEO_VERIFIED=1`.
+Local `NEON_AI_GATEWAY_VIDEO_VERIFIED=1` and `NEON_AI_GATEWAY_AUDIO_VERIFIED=1` enable the verified paths. Flags are deployment-specific and should stay zero in a new environment until probes pass. `npm run probe:gateway-video` uses synthetic media; it consumes prepaid Gateway credit but never shops or purchases.
 
-Direct Gemini still takes priority when `GEMINI_API_KEY` is set. Voice transcription uses Gemini's Interactions API and stays direct-only.
+Phone video is inline at 2 fps after ffmpeg compression when necessary. The app’s default raw inline ceiling is 3 MB; base64 expands the request. This is a conservative app setting, not a measured maximum provider allowance. Short clips may still fail or need to be shortened. Real shelf/gallery/recipe/photo recognition accuracy remains to verify on Expo Go.
 
-The $1 Neon spend alert is an email, not a cap. The account has a card attached, so watch Gateway usage while testing.
+Gateway credits are prepaid and official documentation says automatic top-ups are unavailable. No manual purchase/top-up was made. The app persists a daily UTC request ledger under `DATA_DIR/gateway-quota.json`: default 50 requests, configured maximum 100; agent runs reserve their maximum six calls before generation. Model output caps also apply. This ledger is a local request bound, **not a monetary billing cap**. Do not add credits automatically. Neon’s main-compute $1 email alert is not a hard cap.
 
-## 3. Exa (candidate products)
+## Direct Gemini — optional, unconfigured
 
-Set `EXA_API_KEY` (configured). Aeri calls `/search` with `type: auto`, `userLocation: US`, `includeDomains` limited to your favorite stores (or Walmart, Target, Amazon), and highlights. Search results are candidates only; no price or stock comes from a snippet. Read `costDollars` on the dashboard; the free tier has no card.
+`GEMINI_API_KEY` is missing and is not needed for the current Gateway path. If explicitly activated later, it takes precedence and bills the separate Google account. Verify model availability on that account and obtain an approved Google budget before use. The adapter’s video/audio model variables are `GEMINI_VIDEO_MODEL` and `GEMINI_AUDIO_MODEL`; direct Gemini can use the Files API and deletes uploaded files afterward. Gateway cannot use that Files path.
 
-## 4. Kernel (store-page checks, cart preparation, live review)
+## Exa — configured
 
-Set `KERNEL_API_KEY` (configured). `KERNEL_RETAILER_URL` is the store opened when a list has no chosen store.
+`EXA_API_KEY` enables retailer-constrained product candidate discovery. Search results and highlights are discovery evidence; snippets never become verified prices or stock. Prefer product-path pages and keep applied brand/type/size constraints. The earlier account audit found a Free account without a card. Recheck current credit before substantial live runs.
 
-- **Verification:** reads the retailer's own page in a stealth, headful browser. Headless renderers crashed on Target during testing. It reads JSON-LD first, then that retailer's visible price, store and fulfillment elements. Every session is deleted.
-- **Store location:** comes from the cloud browser's network location (it was NYC and then South Carolina during testing), not from you. The app labels it that way.
-- **Not yet done:** choosing your store requires a per-retailer store picker or a signed-in profile.
-- **Cart preparation:** each approved product page gets one add-to-cart click, which counts only when the page confirms it. The browser then lands on the store's cart, and the live view opens in Aeri. It never clicks checkout, pay or place order.
-- **Rehearse safely:**
-  - `npm run check:retailer -w @personal-agent/api -- "<item>" target.com`
-  - `npm run check:cart -w @personal-agent/api -- <product URL>` (guest cart, browser deleted)
-  - `npm run check:compare -w @personal-agent/api`
-- **Retailer login (planned):** use Kernel Managed Auth (`auth.connections.create` → hosted login in the phone's in-app browser → `profile` on later browsers), storing only opaque IDs. The free plan lists three connections. Passkey-only logins are unsupported.
+## Kernel — configured; new account flows need user rehearsal
 
-## 5. Neon Postgres
+`KERNEL_API_KEY` is scoped to the hackathon organization/Default project. `KERNEL_RETAILER_URL` is only the fallback store when an approved list has no chosen merchant.
 
-Set `DATABASE_URL` (configured). The API keeps one JSON state row in `agent_state`; raw video never goes there. Use a dedicated branch for testing. Moving to relational tables for offers, approvals, orders and inventory events is still planned.
+Product checks use stealth, headful browsers because Target headless checks crashed previously. They read merchant JSON-LD and explicit visible price/stock/store evidence. Temporary verification browsers are deleted. Bot checks and missing products remain unverified.
 
-## 6. AgentMail
+New retailer modules:
 
-Create a private inbox and a `message.received` webhook pointing to `https://<public API>/webhooks/agentmail`, then set `AGENTMAIL_WEBHOOK_SECRET`. Email content is treated as untrusted evidence for review. This needs a public HTTPS API first.
+- `merchant-store.ts`: Target ZIP picker attempts selection and requires visible confirmation. Other retailers return unsupported; the user selects location in live view. No proxy-IP location is represented as the user’s location. Target selectors are mock-tested, not live confirmed.
+- `merchant-auth.ts` / `retailer-api.ts`: explicit **Connect** starts/reuses a scoped Managed Auth hosted login opened in the mobile in-app browser. Passwords/MFA are never sent to the LLM. Only opaque connection IDs persist privately. The app allows three saved connections; provider limits remain authoritative. Credential saving, scheduled health checks, automatic reauthentication and telemetry are disabled. Reconnect is manual when needed.
+- Cart preparation reuses the authenticated profile/proxy server-side. Quantity controls must accept the approved number of packs. Unsupported multi-pack controls remain uncertain instead of silently adding one. A line counts as added only after a new explicit addition confirmation; final cart verification is still required.
+- Disconnect closes matching sessions, clears private live views, invalidates final approval, and deletes the scoped connection/profile. Retryable failures retain the private record for cleanup.
+- `merchant-summary.ts`: reads only the existing current cart/checkout page. It never clicks or navigates to checkout. Missing charges/quantity/location/fulfillment stay unknown. Complete summaries require every charge, matching arithmetic and explicit checkout context; actual retailer selectors still need rehearsal.
 
-## 7. Fly.io (not deployed)
+The general browser tool can fill only exact Search/Search products fields and click only exact Add/Add to cart/Add to bag buttons. It cannot submit real checkout/payment. Its self-reported additions remain uncertain until exact cart evidence is checked. Split baskets are comparison-only; choose a single-store option for checkout.
 
-The root Dockerfile and `fly.template.toml` are ready. Don't deploy until a control that actually prevents card charges beyond the posted credit has been verified. For video frames, the image must also install ffmpeg.
+## Persistence — built, live Neon activation gated
 
-## VideoMemory (not integrated, by decision)
+Local state uses private atomic files and bounded history. `DATABASE_URL` enables versioned relational entities/projections, private sessions, merchant connection IDs, receipt claims and legacy `agent_state` migration. Those paths have deterministic tests; no live Postgres migration was run in this phase. Raw video never enters the database. Live-view URLs are private server metadata with a 15-minute TTL, outside bootstrap state.
 
-`/Users/kathan/Desktop/videomemory` works locally, but its cross-video `search` covers speech transcripts only. Visual `look` needs a specific video and returns a frame grid that still needs a vision model. Each CLI call also loads torch models, which adds about 5–20 seconds.
+The main Neon account has a card attached. Start Expo verification with:
 
-For "where did I last see X?", Aeri answers from confirmed, timestamped observations instead, and shows the ffmpeg frame from the moment it was seen. Revisit VideoMemory for semantic search across a large video library, behind `VIDEOMEMORY_PROJECT_PATH`/`VIDEOMEMORY_DATA_DIR` with its own data directory (never `~/.videomemory`).
+```bash
+HOST=0.0.0.0 DATABASE_URL= DATA_DIR=.data-preview/expo npm run dev:api
+```
+
+## AgentMail — activation pending
+
+Receipt matching now checks merchant, order number and relevant items, deduplicates signed events, and creates a user-review task. Email claims never mark an order received or change pantry inventory automatically. The owner confirms actual delivered packs; missing or substituted lines are handled explicitly.
+
+`AGENTMAIL_WEBHOOK_SECRET` and a public HTTPS `POST /webhooks/agentmail` endpoint remain pending. Do not configure a paid continuation or imply the webhook is live. Safe hosting must be settled first.
+
+## Fly and VideoMemory
+
+Dockerfile includes ffmpeg; Fly is undeployed. Posted credit and idle-stop settings do not guarantee the attached card cannot be charged. Keep deployment gated until a real control satisfies the owner’s no-card-charge requirement.
+
+Kathan’s `/Users/kathan/Desktop/videomemory` remains optional and unintegrated. It provides ingest, transcripts and query-relevant frames/timestamps; a vision model still performs structured household/product perception. Current confirmed observations and ffmpeg frames support recall without its extra Python/model runtime. Revisit cross-video retrieval after real-phone video usefulness is proven.
+
+Large phone photos over3MB are resized to a1600px JPEG when ffmpeg can decode them, before Gateway perception. A failed conversion stays an explicit error; nothing is silently replaced by a sample.
