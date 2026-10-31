@@ -6,8 +6,8 @@ const recipe: Recipe = { id: 'r', title: 'Pasta', servings: 2, source: 'manual',
   { name: 'Milk', quantity: { amount: 500, unit: 'ml' }, optional: false },
 ] };
 const inventory: InventoryItem[] = [
-  { id: 'i', name: 'tomato', quantity: { amount: 2, unit: 'each' }, confidence: 'confirmed', updatedAt: 'now' },
-  { id: 'u', name: 'milk', quantity: { amount: 1, unit: 'l' }, confidence: 'estimated', updatedAt: 'now' },
+  { id: 'i', name: 'tomato', quantity: { amount: 2, unit: 'each' }, confidence: 'confirmed', updatedAt: 'now', evidence: [] },
+  { id: 'u', name: 'milk', quantity: { amount: 1, unit: 'l' }, confidence: 'estimated', updatedAt: 'now', evidence: [] },
 ];
 describe('shopping state', () => {
   it('subtracts confirmed pantry quantity and ignores uncertain observations', () => {
@@ -33,9 +33,10 @@ describe('shopping state', () => {
     expect(recipe.servings).toBe(2);
   });
   it('only commits accepted scan observations', () => {
-    const scan: Scan = { id: 's', status: 'needs_review', source: 'gemini', createdAt: 'now', observations: [
-      { id: 'a', name: 'Eggs', confidence: .8, decision: 'pending' },
-      { id: 'b', name: 'Cheese', confidence: .4, decision: 'pending' },
+    const sighting = { evidence: 'visual' as const, countCertain: true, sightings: [{ startSec: 3 }] };
+    const scan: Scan = { id: 's', status: 'needs_review', source: 'gemini', createdAt: 'now', places: [], unclear: [], unseen: [], observations: [
+      { id: 'a', name: 'Eggs', quantity: { amount: 6, unit: 'each' }, confidence: .8, decision: 'pending', ...sighting },
+      { id: 'b', name: 'Cheese', confidence: .4, decision: 'pending', ...sighting },
     ] };
     expect(() => confirmScan(scan, { a: 'accepted' }, [], 'now', () => 'id')).toThrow();
     const result = confirmScan(scan, { a: 'accepted', b: 'rejected' }, [], 'now', () => 'id');

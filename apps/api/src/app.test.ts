@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Webhook } from 'svix';
-import { createApp } from './app.js';
+import { singlePersonApp } from './testing.js';
 import { createStore, type Store } from './store.js';
 
 let directory = ''; let store: Store;
 afterEach(async () => { vi.unstubAllGlobals(); await store?.close(); if (directory) await rm(directory, { recursive: true, force: true }); });
-async function setup() { directory = await mkdtemp(join(tmpdir(), 'aeri-test-')); store = createStore('', directory); return createApp(store, 'test-code'); }
+async function setup() { directory = await mkdtemp(join(tmpdir(), 'aeri-test-')); process.env.DATA_DIR = directory; store = createStore('', directory); return singlePersonApp(store, 'test-code'); }
 const auth = { Authorization: 'Bearer test-code', 'Content-Type': 'application/json' };
 async function json(response: Response) { return response.json() as Promise<any>; }
 
@@ -29,6 +29,7 @@ describe('authenticated household flow', () => {
     expect((await app.request(`/v1/carts/${recipe.cart.id}/checkout`, { method: 'POST', headers: auth })).status).toBe(400);
     const approved = await json(await app.request(`/v1/carts/${recipe.cart.id}/approve`, { method: 'POST', headers: auth }));
     expect(approved.status).toBe('approved');
+    expect((await json(await app.request('/v1/bootstrap', { headers: auth }))).state.tasks.find((task: any) => task.subjectId === recipe.cart.id).status).toBe('done');
     expect((await app.request(`/v1/carts/${recipe.cart.id}/approve`, { method: 'POST', headers: auth })).status).toBe(400);
     const bootstrap = await json(await app.request('/v1/bootstrap', { headers: auth }));
     expect(bootstrap.state.carts[0].status).toBe('approved');
@@ -40,31 +41,12 @@ describe('authenticated household flow', () => {
     const form = new FormData(); form.append('video', new File([new Uint8Array([0, 1])], 'kitchen.mp4', { type: 'video/mp4' }));
     const scan = await json(await app.request('/v1/scans', { method: 'POST', headers: { Authorization: auth.Authorization }, body: form }));
     expect(scan.status).toBe('needs_review');
+    expect(scan.source).toBe('demo');
     expect((await json(await app.request('/v1/bootstrap', { headers: auth }))).state.inventory).toEqual([]);
     const decisions = Object.fromEntries(scan.observations.map((item: any, index: number) => [item.id, index === 0 ? 'accepted' : 'rejected']));
     const confirmed = await json(await app.request(`/v1/scans/${scan.id}/confirm`, { method: 'POST', headers: auth, body: JSON.stringify({ decisions }) }));
-    expect(confirmed.inventory.map((item: any) => item.name)).toEqual(['Tomatoes']);
+    expect(confirmed.inventory.map((item: any) => item.name)).toEqual(['Milk']);
     expect((await app.request(`/v1/scans/${scan.id}/confirm`, { method: 'POST', headers: auth, body: JSON.stringify({ decisions }) })).status).toBe(400);
-  });
-
-  it('accepts only paired Vapi tool calls and returns correlated results', async () => {
-    const oldSecret = process.env.VAPI_WEBHOOK_SECRET, oldCaller = process.env.VAPI_ALLOWED_CALLER;
-    process.env.VAPI_WEBHOOK_SECRET = 'vapi-test-secret'; process.env.VAPI_ALLOWED_CALLER = '+15550001111';
-    try {
-      const app = await setup();
-      const call = (number: string, confirmed: boolean) => JSON.stringify({ message: { type: 'tool-calls', call: { customer: { number } }, toolCallList: [{ id: 'call-1', function: { name: 'remember', arguments: { text: 'I have 4 eggs', confirmed } } }] } });
-      const rejected = await json(await app.request('/webhooks/vapi', { method: 'POST', headers: { 'x-vapi-secret': 'vapi-test-secret', 'Content-Type': 'application/json' }, body: call('+15550009999', true) }));
-      expect(rejected.results[0].error).toMatch(/not paired/);
-      const unconfirmed = await json(await app.request('/webhooks/vapi', { method: 'POST', headers: { 'x-vapi-secret': 'vapi-test-secret', 'Content-Type': 'application/json' }, body: call('+15550001111', false) }));
-      expect(unconfirmed.results[0].error).toBeTruthy();
-      const accepted = await json(await app.request('/webhooks/vapi', { method: 'POST', headers: { 'x-vapi-secret': 'vapi-test-secret', 'Content-Type': 'application/json' }, body: call('+15550001111', true) }));
-      expect(accepted.results[0].toolCallId).toBe('call-1');
-      expect((await json(await app.request('/v1/bootstrap', { headers: auth }))).state.inventory[0].quantity.amount).toBe(4);
-      const currentShape = JSON.stringify({ message: { type: 'tool-calls', call: { customer: { number: '+15550001111' } }, toolCallList: [{ id: 'call-2', name: 'read_memory', parameters: {} }] } });
-      const read = await json(await app.request('/webhooks/vapi', { method: 'POST', headers: { 'x-vapi-secret': 'vapi-test-secret', 'Content-Type': 'application/json' }, body: currentShape }));
-      expect(read.results[0].name).toBe('read_memory');
-      expect(JSON.parse(read.results[0].result).inventory[0].name).toBe('eggs');
-    } finally { if (oldSecret === undefined) delete process.env.VAPI_WEBHOOK_SECRET; else process.env.VAPI_WEBHOOK_SECRET = oldSecret; if (oldCaller === undefined) delete process.env.VAPI_ALLOWED_CALLER; else process.env.VAPI_ALLOWED_CALLER = oldCaller; }
   });
 
   it('verifies signed AgentMail receipts and deduplicates delivery', async () => {
@@ -73,7 +55,12 @@ describe('authenticated household flow', () => {
     process.env.AGENTMAIL_WEBHOOK_SECRET = secret;
     try {
       const app = await setup();
-      const payload = JSON.stringify({ event_id: 'email-1', event_type: 'message.received', message: { subject: 'Your grocery order' } });
+      await app.accounts.setMailbox('default', { inboxId: 'inbox_mine', address: 'mine@agentmail.to', connectedAt: '2026-10-04T12:00:00.000Z', owned: true });
+      // Mail for an inbox that isn't anyone's is ignored.
+      const stranger = JSON.stringify({ event_id: 'email-0', event_type: 'message.received', message: { inbox_id: 'inbox_other', subject: 'Your grocery order' } });
+      const at0 = new Date();
+      expect((await app.request('/webhooks/agentmail', { method: 'POST', headers: { 'svix-id': 'msg_0', 'svix-timestamp': String(Math.floor(at0.getTime() / 1000)), 'svix-signature': new Webhook(secret).sign('msg_0', at0, stranger) }, body: stranger })).status).toBe(200);
+      const payload = JSON.stringify({ event_id: 'email-1', event_type: 'message.received', message: { inbox_id: 'inbox_mine', subject: 'Your grocery order' } });
       const timestamp = new Date();
       const headers = { 'svix-id': 'msg_1', 'svix-timestamp': String(Math.floor(timestamp.getTime() / 1000)), 'svix-signature': new Webhook(secret).sign('msg_1', timestamp, payload) };
       expect((await app.request('/webhooks/agentmail', { method: 'POST', headers, body: payload })).status).toBe(200);
@@ -83,6 +70,77 @@ describe('authenticated household flow', () => {
       expect(state.tasks.filter((task: any) => task.kind === 'receipt')).toHaveLength(1);
       expect((await app.request('/webhooks/agentmail', { method: 'POST', headers: { ...headers, 'svix-signature': 'bad' }, body: payload })).status).toBe(401);
     } finally { if (old === undefined) delete process.env.AGENTMAIL_WEBHOOK_SECRET; else process.env.AGENTMAIL_WEBHOOK_SECRET = old; }
+  });
+
+  it('walks an approved cart through store handoff, order reference and delivery without skipping a step', async () => {
+    const app = await setup();
+    const post = (path: string, body?: unknown) => app.request(path, { method: 'POST', headers: auth, body: body ? JSON.stringify(body) : undefined });
+    await post('/v1/inventory', { name: 'Garlic', amount: 3, unit: 'each' });
+    const chat = await json(await post('/v1/chat', { text: 'Make this https://youtu.be/abc123' }));
+    expect(chat.reply).toMatch(/sample recipe/);
+    let state = (await json(await app.request('/v1/bootstrap', { headers: auth }))).state;
+    const cart = state.carts[0];
+    expect(state.recipes[0].title).not.toMatch(/demo/i);
+    expect(cart.items.map((item: any) => item.name)).not.toContain('Garlic');
+    expect((await post(`/v1/carts/${cart.id}/ordered`, { reference: 'A-1' })).status).toBe(400);
+    await post(`/v1/carts/${cart.id}/approve`);
+    const checkout = await json(await post(`/v1/carts/${cart.id}/checkout`));
+    expect(checkout.mode).toBe('manual');
+    expect(checkout.cart.checkout).toMatchObject({ mode: 'manual' });
+    expect(checkout.cart.status).toBe('checkout_ready');
+    expect((await post(`/v1/carts/${cart.id}/received`)).status).toBe(400);
+    expect((await post(`/v1/carts/${cart.id}/ordered`, { reference: '   ' })).status).toBe(400);
+    const ordered = await json(await post(`/v1/carts/${cart.id}/ordered`, { reference: '  IC-48213  ' }));
+    expect(ordered.orderReference).toBe('IC-48213');
+    expect((await post(`/v1/carts/${cart.id}/cancel`)).status).toBe(400);
+    await post(`/v1/carts/${cart.id}/received`);
+    state = (await json(await app.request('/v1/bootstrap', { headers: auth }))).state;
+    expect(state.carts[0].receivedAt).toBeTruthy();
+    expect(state.inventory.find((item: any) => item.name === 'Pasta').quantity).toEqual({ amount: 250, unit: 'g' });
+    expect((await post(`/v1/carts/${cart.id}/received`)).status).toBe(400);
+  });
+
+  it('discards an unordered list and removes a remembered item', async () => {
+    const app = await setup();
+    const post = (path: string, body?: unknown) => app.request(path, { method: 'POST', headers: auth, body: body ? JSON.stringify(body) : undefined });
+    const { cart } = await json(await post('/v1/recipes', { url: 'https://www.youtube.com/watch?v=demo' }));
+    expect((await json(await post(`/v1/carts/${cart.id}/cancel`))).status).toBe('cancelled');
+    expect((await post(`/v1/carts/${cart.id}/approve`)).status).toBe(400);
+    const item = await json(await post('/v1/inventory', { name: 'Milk', amount: 1, unit: 'l' }));
+    expect((await app.request(`/v1/inventory/${item.id}`, { method: 'DELETE', headers: auth })).status).toBe(200);
+    expect((await json(await app.request('/v1/bootstrap', { headers: auth }))).state.inventory).toEqual([]);
+    expect((await app.request(`/v1/inventory/${item.id}`, { method: 'DELETE', headers: auth })).status).toBe(404);
+    await post('/v1/preferences', { key: 'shirt size', value: 'M' });
+    expect((await app.request(`/v1/preferences/${encodeURIComponent('shirt size')}`, { method: 'DELETE', headers: auth })).status).toBe(200);
+    expect((await json(await app.request('/v1/bootstrap', { headers: auth }))).state.preferences).toEqual({});
+  });
+
+  it('keeps separate free-form notes instead of overwriting them', async () => {
+    const app = await setup();
+    const say = (text: string) => app.request('/v1/chat', { method: 'POST', headers: auth, body: JSON.stringify({ text }) });
+    await say('Remember that we avoid peanuts');
+    await say('Remember that our favorite store is Trader Joe’s');
+    const preferences = (await json(await app.request('/v1/bootstrap', { headers: auth }))).state.preferences;
+    expect(Object.values(preferences)).toEqual(['we avoid peanuts', 'our favorite store is Trader Joe’s']);
+  });
+
+  it('reports a gateway failure by provider without leaking the key', async () => {
+    const priorKey = process.env.NEON_AI_GATEWAY_API_KEY, priorBase = process.env.NEON_AI_GATEWAY_BASE_URL;
+    process.env.NEON_AI_GATEWAY_API_KEY = 'gateway-secret-value-123';
+    process.env.NEON_AI_GATEWAY_BASE_URL = 'https://gateway.example';
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ error: { message: 'Invalid API key gateway-secret-value-123' } }), { status: 401, headers: { 'Content-Type': 'application/json' } }));
+    try {
+      const app = await setup();
+      const response = await app.request('/v1/chat', { method: 'POST', headers: auth, body: JSON.stringify({ text: 'What should I cook tonight?' }) });
+      const body = await json(response);
+      expect(response.status).toBe(502);
+      expect(body.provider).toBe('Neon AI Gateway');
+      expect(body.error).toMatch(/^Neon AI Gateway: /);
+      expect(body.error).not.toContain('gateway-secret-value-123');
+    } finally {
+      if (priorKey === undefined) delete process.env.NEON_AI_GATEWAY_API_KEY; else process.env.NEON_AI_GATEWAY_API_KEY = priorKey;
+      if (priorBase === undefined) delete process.env.NEON_AI_GATEWAY_BASE_URL; else process.env.NEON_AI_GATEWAY_BASE_URL = priorBase;
+    }
   });
 
   it('runs the Mastra agent through a custom OpenAI-compatible gateway', async () => {
@@ -100,7 +158,7 @@ describe('authenticated household flow', () => {
       const reply = await json(await app.request('/v1/chat', { method: 'POST', headers: auth, body: JSON.stringify({ text: 'Can you suggest a dinner?' }) }));
       expect(reply.reply).toBe('I can help plan that.');
       expect(requests[0].url).toBe('https://gateway.example/v1/chat/completions');
-      expect(requests[0].body.model).toBe('gpt-5-mini');
+      expect(requests[0].body.model).toBe(process.env.NEON_AI_GATEWAY_MODEL ?? 'gpt-5-4-mini');
     } finally {
       if (priorKey === undefined) delete process.env.NEON_AI_GATEWAY_API_KEY; else process.env.NEON_AI_GATEWAY_API_KEY = priorKey;
       if (priorBase === undefined) delete process.env.NEON_AI_GATEWAY_BASE_URL; else process.env.NEON_AI_GATEWAY_BASE_URL = priorBase;

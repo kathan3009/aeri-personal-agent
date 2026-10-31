@@ -3,10 +3,33 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {"dev": "tsx watch src/index.ts", "start": "tsx src/index.ts", "typecheck": "tsc --noEmit", "test": "vitest run"},
-  "dependencies": {
-    "@personal-agent/core": "*", "@hono/node-server": "^1.19.0", "@mastra/core": "^1.0.0",
-    "@google/genai": "^1.52.0", "@onkernel/sdk": "^0.119.0", "hono": "^4.13.0", "postgres": "^3.4.0", "svix": "^2.6.1", "zod": "^4.1.0", "dotenv": "^17.2.0"
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check:retailer": "tsx scripts/check-retailer.ts",
+    "check:cart": "tsx scripts/check-cart.ts",
+    "check:compare": "tsx scripts/check-compare.ts"
   },
-  "devDependencies": {"@types/node": "^24.0.0", "tsx": "^4.23.0", "typescript": "^6.0.0", "vitest": "^3.2.0"}
+  "dependencies": {
+    "@google/genai": "^1.52.0",
+    "@hono/node-server": "^1.19.0",
+    "@mastra/core": "^1.0.0",
+    "@onkernel/sdk": "^0.119.0",
+    "@personal-agent/core": "*",
+    "@sentry/node": "^11.4.0",
+    "agentmail": "^0.5.35",
+    "dotenv": "^17.2.0",
+    "hono": "^4.13.0",
+    "postgres": "^3.4.0",
+    "svix": "^2.6.1",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.0",
+    "vitest": "^3.2.0"
+  }
 }
