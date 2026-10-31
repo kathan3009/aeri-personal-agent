@@ -1,14 +1,11 @@
 import Kernel from '@onkernel/sdk';
-import { Agent } from '@mastra/core/agent';
-import { Mastra } from '@mastra/core/mastra';
-import { createTool } from '@mastra/core/tools';
-import { normalizeName, parsePackSize, type Offer, type ShoppingNeed, type StoreQuote, type Verification } from '@personal-agent/core';
-import { z } from 'zod';
+import { normalizeName, parsePackSize, type BlockReason, type Offer, type ShoppingNeed, type StoreQuote, type TraceStep, type Verification } from '@personal-agent/core';
 import { ProviderError, researchProducts, scrub, withProvider } from './providers.js';
-import { merchantBrowserOptions, retailerDomain } from './merchant-auth.js';
+import { merchantBrowserOptions, registrableDomain, retailerDomain } from './merchant-auth.js';
+import { botCheck, launchOptions, recordOutcome, siteSetup } from './site-config.js';
+import { storeBrowser } from './kernel-pools.js';
 import { selectStore, type StoreSelection } from './merchant-store.js';
 import { readMerchantSummary as readSummary, type MerchantSummary } from './merchant-summary.js';
-import { reserveGatewayRequests } from './gateway-budget.js';
 
 /**
  * Retailer-neutral discovery and verification. Exa finds candidate product pages (discovery is not verification);
@@ -23,13 +20,52 @@ const merchantDomains: Array<[RegExp, string]> = [
   [/amazon/i, 'amazon.com'], [/\bh-?e-?b\b/i, 'heb.com'], [/publix/i, 'publix.com'], [/aldi/i, 'aldi.us'], [/sprouts/i, 'sprouts.com'],
   [/cvs/i, 'cvs.com'], [/walgreens/i, 'walgreens.com'], [/uniqlo/i, 'uniqlo.com'], [/old navy/i, 'oldnavy.gap.com'], [/\bgap\b/i, 'gap.com'], [/nordstrom/i, 'nordstrom.com'],
 ];
-export function merchantDomainsFor(preferred: string[], fallback = ['walmart.com', 'target.com']): string[] {
-  const domains = preferred.flatMap(name => merchantDomains.filter(([pattern]) => pattern.test(name)).map(([, domain]) => domain));
+export function merchantDomainsFor(preferred: string[], fallback: string[] = ['walmart.com', 'target.com']): string[] {
+  const domains = preferred.flatMap(name => /^[\w-]+(\.[\w-]+)+$/.test(name.trim()) ? [registrableDomain(name.trim())].filter((d): d is string => !!d)
+    : merchantDomains.filter(([pattern]) => pattern.test(name)).map(([, domain]) => domain));
   return [...new Set(domains.length ? domains : fallback)].slice(0, 3);
 }
 export const merchantName = (host: string) => host.replace(/^www\./, '').replace(/\.(com|us|net|co)$/, '').replace(/^\w/, c => c.toUpperCase());
 
 const productPath = /\/(p|ip|dp|pd|product|products|prod|item|items)\/|-p-|\/sku\//i;
+// Sites that write about products but don't sell them.
+const notStores = /^(youtube\.com|youtu\.be|pinterest\.com|reddit\.com|wikipedia\.org|facebook\.com|instagram\.com|tiktok\.com|x\.com|twitter\.com|quora\.com|medium\.com|allrecipes\.com|foodnetwork\.com|nytimes\.com|seriouseats\.com|bonappetit\.com|epicurious\.com|delish\.com|thekitchn\.com|healthline\.com|webmd\.com|nih\.gov|google\.com|bing\.com|yelp\.com|tripadvisor\.com|consumerreports\.org|rtings\.com|wirecutter\.com)$/;
+
+export type StoreDiscovery = { domains: string[]; coverage: Record<string, number>; preferred: string[]; searched: boolean };
+/**
+ * Which stores actually sell these items: one open web search per item, keeping only product pages at shops.
+ * Preferred stores are always checked; the rest are the stores that carry the most of the list. Avoided stores
+ * are dropped. Store choice comes from search, not from a fixed list.
+ */
+export async function discoverStores(needs: Array<Pick<ShoppingNeed, 'id' | 'name' | 'brand'>>, options: { prefer?: string[]; avoid?: string[]; limit?: number; brand?: string } = {}): Promise<StoreDiscovery> {
+  const limit = options.limit ?? 4;
+  const preferred = merchantDomainsFor(options.prefer ?? [], []);
+  const avoided = (options.avoid ?? []).map(word => normalizeName(word)).filter(Boolean);
+  const coverage = new Map<string, Set<string>>();
+  const searches = await Promise.all(needs.slice(0, 8).map(async need => ({ need, hits: await researchProducts(`${need.brand ?? ''} ${need.name} buy online`.trim(), { numResults: 10 }).catch(() => []) })));
+  for (const { need, hits } of searches) for (const hit of hits) {
+    let url: URL; try { url = new URL(hit.url); } catch { continue; }
+    if (!productPath.test(url.pathname)) continue;
+    const domain = registrableDomain(url.hostname);
+    // Searches are for US delivery; country-specific shops (amazon.ca, tesco.co.uk) can't deliver here.
+    if (!domain || notStores.test(domain) || !/\.(com|us|net|org|shop|store)$/.test(domain) || avoided.some(word => normalizeName(merchantName(domain)).includes(word))) continue;
+    coverage.set(domain, (coverage.get(domain) ?? new Set()).add(need.id));
+  }
+  // General retailers get a small edge over single-brand shops that carry the same number of items.
+  const general = new Set([...merchantDomains.map(([, domain]) => domain), 'samsclub.com', 'bjs.com', 'meijer.com', 'albertsons.com', 'stopandshop.com', 'giantfood.com', 'wegmans.com', 'foodlion.com', 'shoprite.com', 'freshdirect.com', 'thrivemarket.com', 'boxed.com', 'bestbuy.com', 'homedepot.com', 'lowes.com', 'ikea.com', 'staples.com', 'officedepot.com']);
+  // A brand's own shop (foundr.com for a foundr. cap) is the surest place to find that exact product.
+  const brand = (options.brand ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const ownShop = (domain: string) => brand.length >= 3 && domain.replace(/[^a-z0-9.]/g, '').split('.')[0].startsWith(brand);
+  const score = (domain: string, count: number) => count + (general.has(domain) ? 0.5 : 0) + (ownShop(domain) ? 2 : 0);
+  // A specialist shop that carries one or two things on a long list isn't worth a separate order.
+  const enough = (domain: string, count: number) => general.has(domain) || ownShop(domain) || count >= Math.max(2, Math.ceil(needs.length * 0.3));
+  const ranked = [...coverage].filter(([domain, set]) => enough(domain, set.size)).sort((a, b) => score(b[0], b[1].size) - score(a[0], a[1].size)).map(([domain]) => domain);
+  // Whatever stores the web search finds best come first. Only when it finds fewer than two are big general stores
+  // added, so there is still a real choice.
+  const fallback = ranked.length >= 2 ? [] : ['walmart.com', 'target.com', 'amazon.com'];
+  const domains = [...new Set([...preferred, ...ranked, ...fallback])].slice(0, Math.max(limit, preferred.length));
+  return { domains, coverage: Object.fromEntries([...coverage].map(([d, set]) => [d, set.size])), preferred, searched: searches.some(s => s.hits.length) };
+}
 export async function discoverProducts(query: string, domains: string[], perDomain = 2): Promise<Array<{ title: string; url: string; snippet?: string; merchant: string }>> {
   const results = await researchProducts(query, { includeDomains: domains, numResults: Math.min(10, domains.length * 4) });
   const byDomain = new Map<string, typeof results>();
@@ -115,8 +151,9 @@ export async function verifyPages(urls: string[], now: () => string, context: Pi
   const byHost = new Map<string, string[]>();
   for (const url of urls) { const host = new URL(url).hostname; byHost.set(host, [...(byHost.get(host) ?? []), url]); }
   await Promise.all([...byHost.values()].slice(0, 4).map(async group => {
-    // Headful: headless renderers crashed on Target product pages during the live check.
-    const browser = await withProvider('Kernel', () => client.browsers.create({ stealth: true, headless: false, timeout_seconds: 120 }));
+    // Each store gets its own working setup (proxy, stealth, window); headful because headless renderers crashed on Target.
+    const setup = await siteSetup(client, group[0]).catch(() => null);
+    const browser = await withProvider('Kernel', async () => client.browsers.create(setup ? await launchOptions(client, setup, { timeout_seconds: 120 }) : { stealth: true, headless: false, timeout_seconds: 120 }));
     try {
       let selected: StoreSelection | undefined;
       if (context.zip) {
@@ -132,7 +169,10 @@ export async function verifyPages(urls: string[], now: () => string, context: Pi
           results.set(url, v);
         } catch (error) { results.set(url, toVerification(null, now(), (error as Error).message)); }
       }
-    } finally { await client.browsers.deleteByID(browser.session_id).catch(() => undefined); }
+    } finally {
+      await client.browsers.deleteByID(browser.session_id).catch(() => undefined);
+      if (setup) await recordOutcome(setup.domain, setup.label, group.some(url => results.get(url)?.status === 'blocked')).catch(() => undefined);
+    }
   }));
   return results;
 }
@@ -165,8 +205,8 @@ export async function liveOffers(needs: ShoppingNeed[], domains: string[], now: 
 }
 
 export type CartLine = { itemId: string; name: string; amount: number; unit: string; packs: number; productUrl?: string };
-export type MerchantContext = { zip?: string; connectionId?: string };
-export type PreparedCart = { url: string; liveViewUrl?: string; sessionId?: string; note: string; mode: 'manual' | 'kernel'; storeSelection?: StoreSelection; lines: Array<{ itemId: string; result: 'added' | 'unavailable' | 'substituted' | 'uncertain'; detail?: string; confirmedPacks?: number }> };
+export type MerchantContext = { zip?: string; connectionId?: string; /** Called as lines are tried, and once the live view exists, so the phone can follow along. */ progress?: (update: { lines: PreparedCart['lines']; liveViewUrl?: string; sessionId: string }) => Promise<void> };
+export type PreparedCart = { url: string; liveViewUrl?: string; sessionId?: string; note: string; mode: 'manual' | 'kernel'; signedIn?: boolean; cartUrl?: string; storeSelection?: StoreSelection; lines: Array<{ itemId: string; result: 'added' | 'unavailable' | 'substituted' | 'uncertain'; detail?: string; confirmedPacks?: number; reason?: BlockReason }>; runId?: string; trace?: TraceStep[] };
 
 export const addScript = (url: string, packs = 1) => {
 if (!Number.isInteger(packs) || packs < 1 || packs > 99) throw new Error('Approved pack count must be between 1 and 99');
@@ -178,7 +218,9 @@ if (actual.protocol !== 'https:' || !(actual.hostname === expectedDomain || actu
 const path = actual.pathname.toLowerCase(), segments = path.split('/');
 if (segments.some(s => ['checkout', 'payment', 'review-order', 'place-order', 'login', 'signin'].includes(s))) return { result: 'uncertain', detail: 'Checkout and account actions are reserved for the user' };
 if (!segments.some(s => ['p', 'ip', 'dp', 'pd', 'product', 'products', 'prod', 'item', 'items', 'sku'].includes(s)) && !path.includes('-p-')) return { result: 'uncertain', detail: 'The store did not open the approved product page' };
-if (/sign ?in|log ?in|captcha|access denied/i.test(await page.title())) return { result: 'uncertain', detail: 'The store asked for sign-in or a check' };
+if (/captcha|access denied|robot|verification/i.test(await page.title())) return { result: 'uncertain', detail: 'The store asked to confirm you’re a person' };
+if (/sign ?in|log ?in/i.test(await page.title())) return { result: 'uncertain', detail: 'The store asked for sign-in or a check' };
+if (/quick verification|press (&|and) hold|robot or human|verify you are (a )?human|are you a robot|access denied|pardon our interruption/i.test((await page.locator('body').innerText().catch(() => '')).slice(0, 3000))) return { result: 'uncertain', detail: 'The store asked to confirm you’re a person' };
 const packs = ${packs};
 const quantity = page.locator('select[aria-label*="uantity"], input[aria-label*="uantity"]').first();
 const hasQuantity = !!(await quantity.count());
@@ -188,8 +230,31 @@ if (hasQuantity) {
  try { if (tag === 'select') await quantity.selectOption(String(packs)); else await quantity.fill(String(packs)); } catch { return { result: 'uncertain', detail: 'The store refused the approved quantity' }; }
  if (Number(await quantity.inputValue()) !== packs) return { result: 'uncertain', detail: 'The store did not confirm the approved quantity' };
 }
-const button = page.getByRole('button', { name: /^(add|add to cart|add to bag)$/i, exact: true }).first();
-await button.waitFor({ state: 'visible', timeout: 15000 }).catch(() => undefined);
+// The page's own "Add to cart" / "Add" button. Some stores label it with the product ("Add to cart - Lipton Black Tea"),
+// and the same page lists other products' buttons too, so a labelled button counts only if it names this page's product.
+let button = page.getByRole('button', { name: /^(add|add to cart|add to bag|add to basket)$/i }).first();
+await button.waitFor({ state: 'visible', timeout: 12000 }).catch(() => undefined);
+if (!(await button.count())) {
+  const heading = (await page.locator('h1').first().innerText({ timeout: 3000 }).catch(() => '')).toLowerCase().split(/[,:|(]/)[0].replace(/\s+/g, ' ').trim();
+  const labels = await page.getByRole('button', { name: /^add to (cart|bag|basket)\s*(-|for)\s/i }).evaluateAll(els => els.map(e => (e.getAttribute('aria-label') || e.textContent || '').replace(/\s+/g, ' ').trim()));
+  const own = heading.length >= 6 ? labels.find(label => label.toLowerCase().includes(heading)) : undefined;
+  if (own) button = page.getByRole('button', { name: own, exact: true }).first();
+}
+// Signed in with a store chosen, Target hides "Add to cart" until you pick how to get it (Delivery, then Shipping, then
+// Pickup); some pages then show "Deliver it" / "Ship it" / "Pick it up" instead of "Add to cart".
+if (!(await button.count())) {
+  for (const way of [/^delivery\b/i, /^shipping\b/i, /^pickup\b/i]) {
+    const choice = page.getByRole('button', { name: way }).first();
+    if (!(await choice.count())) continue;
+    await choice.click({ timeout: 8000 }).catch(() => undefined);
+    await page.waitForTimeout(2000);
+    button = page.getByRole('button', { name: /^(add|add to cart|add to bag|add to basket)$/i }).first();
+    await button.waitFor({ state: 'visible', timeout: 6000 }).catch(() => undefined);
+    for (const go of [/^deliver it$/i, /^ship it$/i, /^pick it up$/i]) { if (await button.count()) break; const option = page.getByRole('button', { name: go }).first(); if (await option.count()) button = option; }
+    if (await button.count()) break;
+  }
+}
+// (already waited for the page's own button above)
 if (!(await button.count())) return { result: /out of stock|sold out|unavailable/i.test(await page.locator('body').innerText()) ? 'unavailable' : 'uncertain', detail: 'No add-to-cart button found' };
 if (await button.isDisabled().catch(() => false)) return { result: 'unavailable', detail: 'Add to cart is disabled' };
 const before = (await page.locator('body').innerText()).slice(0, 6000);
@@ -200,8 +265,59 @@ const confirms = /added to (your )?(cart|bag|basket)|item added/i;
 return confirms.test(text) && !confirms.test(before) ? { result: 'added', ...(hasQuantity ? { confirmedPacks: packs } : {}) } : { result: 'uncertain', detail: 'Clicked add, but the page did not show a new addition confirmation' };`;
 };
 
+const PERSON_CHECK = 'The store asked to confirm you’re a person';
 /**
- * Prepares the store cart for exactly the approved lines. With Kernel, product pages that are known get one deterministic
+ * Tries to get past a bot check without the person: first give Kernel's CAPTCHA solver a moment (stealth setups),
+ * then press and hold the challenge button with real OS-level mouse input, which page scripts can't tell from a
+ * person. Returns true when the check is gone.
+ */
+export async function clearChallenge(client: Kernel, sessionId: string): Promise<boolean> {
+  const look = `const text = (await page.locator('body').innerText().catch(() => '')).slice(0, 3000);
+const box = await page.locator('#px-captcha').boundingBox().catch(() => null);
+const frame = await page.evaluate(() => ({ x: window.screenX + (window.outerWidth - window.innerWidth) / 2, y: window.screenY + (window.outerHeight - window.innerHeight) }));
+return { text, box, frame };`;
+  const read = async () => { const r = await client.browsers.playwright.execute(sessionId, { code: look, timeout_sec: 20 }).catch(() => null); return r?.success ? r.result as { text: string; box: { x: number; y: number; width: number; height: number } | null; frame: { x: number; y: number } } : null; };
+  const pass = (state: Awaited<ReturnType<typeof read>>) => !!state && !state.box && !botCheck.test(state.text);
+  await new Promise(done => setTimeout(done, 6000));
+  let state = await read();
+  if (pass(state)) return true;
+  if (state?.box) {
+    const x = Math.round(state.frame.x + state.box.x + state.box.width / 2 + (Math.random() * 16 - 8)), y = Math.round(state.frame.y + state.box.y + state.box.height / 2 + (Math.random() * 6 - 3));
+    await client.browsers.computer.batch(sessionId, { actions: [
+      { type: 'move_mouse', move_mouse: { x, y, duration_ms: 700 + Math.round(Math.random() * 600) } },
+      { type: 'sleep', sleep: { duration_ms: 250 + Math.round(Math.random() * 250) } },
+      { type: 'click_mouse', click_mouse: { x, y, click_type: 'down' } },
+      { type: 'sleep', sleep: { duration_ms: 8500 + Math.round(Math.random() * 2000) } },
+      { type: 'click_mouse', click_mouse: { x, y, click_type: 'up' } },
+    ] } as never).catch(() => undefined);
+    await new Promise(done => setTimeout(done, 5000));
+    state = await read();
+  }
+  return pass(state);
+}
+
+// Typing a store's cart address directly looks automated (Target challenges a bare /cart visit), so Aeri clicks the
+// store's own cart icon from the page it's on, and only opens the cart address if there's no icon.
+/** The store's own cart page (opens the store's app on a phone when it has one). Instacart carts belong to a shop. */
+export function storeCartUrl(domain: string, lastUrl?: string) {
+  if (domain === 'instacart.com') { const shop = lastUrl?.match(/instacart\.com\/store\/([a-z0-9-]+)\//)?.[1]; return shop && shop !== 's' ? `https://www.instacart.com/store/${shop}/storefront` : 'https://www.instacart.com/store'; }
+  return `https://www.${domain}${domain === 'target.com' ? '/cart' : cartPages[domain] ?? '/cart'}`;
+}
+const cartPages: Record<string, string> = { 'walmart.com': '/cart', 'amazon.com': '/gp/cart/view.html', 'kroger.com': '/cart', 'costco.com': '/CheckoutCartView', 'wholefoodsmarket.com': '/cart' };
+export const cartScript = (storeUrl: string) => {
+  const domain = retailerDomain(storeUrl), path = cartPages[domain];
+  // Target guards its cart page with its strongest bot check; leave the person on the product page and let them
+  // open the cart in the live view, where a real person passes.
+  if (domain === 'target.com') return `return page.url();`;
+  return path ? `await page.goto(${JSON.stringify(new URL(path, storeUrl).toString())}, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => undefined); return page.url();`
+    : `if (!/^https:\\/\\/([^/]+\\.)?${domain.replace(/\./g, '\\.')}\\//.test(page.url())) await page.goto(${JSON.stringify(new URL('/', storeUrl).toString())}, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => undefined);
+const cart = page.getByRole('button', { name: /^(view )?(your )?(shopping )?cart\\b|^items in cart|^\\d+ items? in cart/i }).first();
+if (await cart.count().catch(() => 0)) await cart.click({ timeout: 5000 }).catch(() => undefined);
+return page.url();`;
+};
+
+/**
+ * Fallback when no AI model is configured (the shopping agent does this otherwise). Prepares the store cart for exactly the approved lines. With Kernel, product pages that are known get one deterministic
  * add-to-cart click each; the page must confirm before a line counts as added. It never opens checkout or payment.
  * Without Kernel, the person adds the items at the store themselves.
  */
@@ -211,10 +327,14 @@ export async function prepareMerchantCart(storeUrl: string, lines: CartLine[], c
   for (const line of lines) if (line.productUrl && retailerDomain(line.productUrl) !== domain) throw new Error('An approved product belongs to another retailer');
   const client = kernel();
   if (!client) return { url: storeUrl, mode: 'manual', lines: [], note: `Aeri opened ${host}. Add the ${lines.length} approved items there and check out yourself.` };
-  const options = await merchantBrowserOptions(client, storeUrl, context.connectionId);
-  const browser = await withProvider('Kernel', () => client.browsers.create(options));
+  const setup = await siteSetup(client, storeUrl).catch(() => null);
+  const options = await merchantBrowserOptions(client, storeUrl, context.connectionId, setup ? await launchOptions(client, setup) : undefined);
+  // A warm browser from the store's pool when available (already on the right setup and sign-in).
+  const browser = await withProvider('Kernel', () => storeBrowser(client, setup, options, options.profile?.name));
   const results: PreparedCart['lines'] = [];
   let storeSelection: StoreSelection | undefined;
+  let blocked = false;
+  await context.progress?.({ lines: [], liveViewUrl: browser.browser_live_view_url ?? undefined, sessionId: browser.session_id }).catch(() => undefined);
   try {
     if (context.zip) {
       await client.browsers.playwright.execute(browser.session_id, { code: `await page.goto(${JSON.stringify(storeUrl)}, { waitUntil: 'domcontentloaded' }); return page.url();`, timeout_sec: 35 });
@@ -227,23 +347,40 @@ export async function prepareMerchantCart(storeUrl: string, lines: CartLine[], c
     }
     for (const line of lines) {
       if (!line.productUrl) continue;
-      const run = await client.browsers.playwright.execute(browser.session_id, { code: addScript(line.productUrl, line.packs), timeout_sec: 50 }).catch(error => ({ success: false, error: (error as Error).message, result: undefined }));
-      const outcome = run.success ? run.result as { result: 'added' | 'unavailable' | 'uncertain'; detail?: string; confirmedPacks?: number } : { result: 'uncertain' as const, detail: scrub(String(run.error ?? 'Browser step failed')).slice(0, 100) };
+      const attempt = async () => {
+        const run = await client.browsers.playwright.execute(browser.session_id, { code: addScript(line.productUrl!, line.packs), timeout_sec: 50 }).catch(error => ({ success: false, error: (error as Error).message, result: undefined }));
+        return run.success ? run.result as { result: 'added' | 'unavailable' | 'uncertain'; detail?: string; confirmedPacks?: number } : { result: 'uncertain' as const, detail: scrub(String(run.error ?? 'Browser step failed')).slice(0, 100) };
+      };
+      let outcome = await attempt();
+      // A bot check on the way: try to clear it once (Kernel's solver, then a real press-and-hold), then retry the item.
+      if (outcome.detail === PERSON_CHECK && await clearChallenge(client, browser.session_id)) outcome = await attempt();
+      if (outcome.detail === PERSON_CHECK) blocked = true;
       results.push({ itemId: line.itemId, result: outcome.result, detail: outcome.detail, confirmedPacks: outcome.confirmedPacks });
+      await context.progress?.({ lines: results, liveViewUrl: browser.browser_live_view_url ?? undefined, sessionId: browser.session_id }).catch(() => undefined);
     }
     const unlinked = lines.filter(line => !line.productUrl);
-    if (unlinked.length) results.push(...await agentAdd(client, browser.session_id, storeUrl, unlinked));
-    // Leave the live view on the store's cart so the person reviews what is actually in it.
-    await client.browsers.playwright.execute(browser.session_id, { code: `await page.goto(${JSON.stringify(new URL('/cart', storeUrl).toString())}, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => undefined); return page.url();`, timeout_sec: 40 }).catch(() => null);
+    // Without the shopping agent (no AI model configured), items lacking a product page are left for the person.
+    for (const line of lines.filter(entry => !entry.productUrl)) results.push({ itemId: line.itemId, result: 'uncertain', detail: `Search for “${line.name.toLowerCase()}” in the store and add it` });
+    // Leave the live view on the store's cart so the person reviews what is actually in it. Known cart pages are
+    // opened directly; elsewhere Aeri opens the store and taps its cart button (never checkout).
+    await client.browsers.playwright.execute(browser.session_id, { code: cartScript(storeUrl), timeout_sec: 40 }).catch(() => undefined);
   } catch (error) {
     await client.browsers.deleteByID(browser.session_id).catch(() => undefined);
     throw error instanceof ProviderError ? error : new ProviderError('Kernel', (error as Error).message);
   }
-  const added = results.filter(r => r.result === 'added').length;
-  const note = results.length
-    ? `Aeri added ${added} of ${lines.length} items at ${host}${added < lines.length ? '; check the rest in the store' : ''}. Review the real cart, then pay there yourself.`
-    : `A private browser is open at ${host}. Add the ${lines.length} approved items, review the cart, and pay there yourself.`;
+  // Teach the site setup what happened, so a store that keeps blocking this setup moves to the next one.
+  if (setup && !context.connectionId) await recordOutcome(setup.domain, setup.label, blocked).catch(() => undefined);
+  const note = fillNote(results, lines.length, merchantName(domain));
   return { url: storeUrl, liveViewUrl: browser.browser_live_view_url ?? undefined, sessionId: browser.session_id, note, mode: 'kernel', storeSelection, lines: results };
+}
+
+/** What happened, in the person's terms: how many items are in the cart and what's left for them to do. */
+export function fillNote(results: PreparedCart['lines'], total: number, store: string): string {
+  if (!results.length) return `Your ${store} cart is open. Add the ${total} items, review the cart, and pay there yourself.`;
+  const done = results.filter(r => r.result === 'added' || r.detail?.startsWith('Aeri added')).length;
+  if (results.some(r => r.detail === 'The store asked to confirm you’re a person')) return `${store} asked to confirm you’re a person. Open the live view, complete the check once, and Aeri’s session can continue.${done ? ` ${done} of ${total} items were added before that.` : ''}`;
+  if (!done) return `Aeri couldn’t add these at ${store} by itself. Your ${store} cart is open: search for each item below and add it, then pay there yourself.`;
+  return `Aeri added ${done} of ${total} items at ${store}. ${done < total ? 'Add the rest from the list below, check the cart,' : 'Check the cart,'} then pay there yourself.`;
 }
 
 export async function readMerchantSummary(sessionId: string, storeUrl: string, now?: () => string): Promise<MerchantSummary> {
@@ -252,55 +389,6 @@ export async function readMerchantSummary(sessionId: string, storeUrl: string, n
   return readSummary(client, sessionId, storeUrl, now);
 }
 
-/** For lines without a product page, a bounded Mastra agent may search and click add (Gateway required). */
-async function agentAdd(client: Kernel, sessionId: string, storeUrl: string, lines: CartLine[]): Promise<PreparedCart['lines']> {
-  // The general agent has no verified quantity setter. It must not add a single pack for a multi-pack approval.
-  const multiple = lines.filter(line => line.packs !== 1);
-  if (multiple.length) {
-    const single = lines.filter(line => line.packs === 1);
-    return [...multiple.map(line => ({ itemId: line.itemId, result: 'uncertain' as const, detail: `Set the approved ${line.packs} packs in the store; this product needs a verified quantity control` })),
-      ...(single.length ? await agentAdd(client, sessionId, storeUrl, single) : [])];
-  }
-  const key = process.env.NEON_AI_GATEWAY_API_KEY || process.env.NEON_AI_GATEWAY_TOKEN, base = process.env.NEON_AI_GATEWAY_BASE_URL;
-  if (!key || !base) return lines.map(line => ({ itemId: line.itemId, result: 'uncertain' as const, detail: `Search for ${line.name} in the store` }));
-  const origin = new URL(storeUrl).hostname;
-  await client.browsers.playwright.execute(sessionId, { code: `await page.goto(${JSON.stringify(storeUrl)}); return page.url();`, timeout_sec: 40 });
-  const snapshot = `return { url: page.url(), title: await page.title(), text: (await page.locator('body').innerText()).slice(0, 4500), buttons: await page.getByRole('button').allTextContents().then(xs => xs.slice(0, 25)) };`;
-  const browserAction = createTool({
-    id: 'retailerBrowser', description: 'Inspect the retailer page, fill exactly Search or Search products, or click exactly Add, Add to cart, or Add to bag. Never place an order or pay.',
-    inputSchema: z.object({ action: z.enum(['inspect', 'fill', 'click']), label: z.string().optional(), value: z.string().optional() }),
-    execute: async ({ action, label, value }) => {
-      if (action !== 'inspect' && !label) throw new Error('A visible label is required');
-      if (action === 'click' && !/^(add|add to cart|add to bag)$/i.test(label!.trim())) throw new Error('Only exact add-to-cart buttons are permitted');
-      if (action === 'fill' && !/^(search|search products)$/i.test(label!.trim())) throw new Error('The cart agent can fill only product search fields');
-      const operation = action === 'fill' ? `const field = page.getByPlaceholder(${JSON.stringify(label ?? '')}, { exact: true }).first(); if (await field.count()) await field.fill(${JSON.stringify(value ?? '')}); else await page.getByRole('textbox', { name: ${JSON.stringify(label ?? '')}, exact: true }).first().fill(${JSON.stringify(value ?? '')}); await page.keyboard.press('Enter');`
-        : action === 'click' ? `await page.getByRole('button', { name: ${JSON.stringify(label ?? '')}, exact: true }).first().click(); await page.waitForTimeout(1500);` : '';
-      const guard = `const current = new URL(page.url()); const allowedHost = ${JSON.stringify(origin.replace(/^www\./, ''))}; if (current.protocol !== 'https:' || !(current.hostname === allowedHost || current.hostname.endsWith('.' + allowedHost)) || current.pathname.toLowerCase().split('/').some(s => ['checkout', 'payment', 'review-order', 'place-order', 'login', 'signin'].includes(s))) throw new Error('This page is reserved for the user');`;
-      const result = await client.browsers.playwright.execute(sessionId, { code: `${guard} ${operation} ${snapshot}`, timeout_sec: 35 });
-      if (!result.success) return { error: String(result.error ?? 'Browser action failed') };
-      const page = result.result as { url?: string };
-      if (page.url && new URL(page.url).hostname !== origin && !new URL(page.url).hostname.endsWith(`.${origin.replace(/^www\./, '')}`)) throw new Error('Retailer browser navigated outside the store');
-      return page;
-    },
-  });
-  const agent = new Agent({
-    id: 'retailer-cart-agent', name: 'Retailer cart assistant',
-    instructions: 'Use retailerBrowser to add only the exact approved items to the store cart. Inspect first. If sign-in or a delivery location is required, stop. Never click checkout, pay, place order, or choose unapproved substitutes. Reply with JSON only: {"lines":[{"name": string, "result": "added"|"unavailable"|"uncertain", "detail": string}]}; say added only when the page confirmed it.',
-    model: { id: `neon/${process.env.NEON_AI_GATEWAY_MODEL ?? 'gpt-5-4-mini'}`, url: `${base.replace(/\/$/, '')}/v1`, apiKey: key, api: 'chat' },
-    tools: { retailerBrowser: browserAction },
-  });
-  try {
-    const mastra = new Mastra({ agents: { retailer: agent }, logger: false, workers: false });
-    await reserveGatewayRequests(6);
-    const answer = await mastra.getAgent('retailer').generate(`Approved items: ${JSON.stringify(lines.map(l => ({ name: l.name, amount: l.amount, unit: l.unit })))}`, { maxSteps: 6, modelSettings: { maxOutputTokens: 1500 } });
-    const parsed = z.object({ lines: z.array(z.object({ name: z.string(), result: z.enum(['added', 'unavailable', 'uncertain']), detail: z.string().optional() })) }).safeParse(JSON.parse(answer.text.replace(/^```(json)?|```$/g, '')));
-    return lines.map(line => {
-      const found = parsed.success ? parsed.data.lines.find(l => normalizeName(l.name) === normalizeName(line.name)) : undefined;
-      // A model report is not independent evidence of the exact product/quantity in the merchant cart.
-      return { itemId: line.itemId, result: found?.result === 'unavailable' ? 'unavailable' : 'uncertain', detail: found?.result === 'added' ? 'The agent reports an addition; verify this exact item and quantity in the real cart' : found?.detail ?? 'Check this item in the store' };
-    });
-  } catch (error) { return lines.map(line => ({ itemId: line.itemId, result: 'uncertain' as const, detail: `Aeri stopped: ${scrub((error as Error).message).slice(0, 80)}` })); }
-}
 
 /** Is the hosted browser still running? Used before re-showing a live view. */
 export async function sessionAlive(sessionId: string): Promise<boolean> {

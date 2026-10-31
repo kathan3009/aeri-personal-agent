@@ -18,13 +18,20 @@ describe('managed retailer authentication', () => {
     const f = fakeClient();
     await expect(beginMerchantAuth(f.client, store, 'owner', false)).rejects.toThrow('consent');
     expect(f.connections.list).not.toHaveBeenCalled();
-    expect(() => retailerDomain('https://target.com.evil.test')).toThrow('supported');
+    // A look-alike host is its own site, never the store it imitates; reserved names are rejected outright.
+    expect(retailerDomain('https://target.com.evil.shop')).toBe('evil.shop');
+    expect(retailerDomain('https://www.target.com/p/1')).toBe('target.com');
+    expect(retailerDomain('https://shop.example.co.uk/item')).toBe('example.co.uk');
+    expect(() => retailerDomain('https://target.com.evil.test')).toThrow('store website');
     expect(() => retailerDomain('http://target.com')).toThrow('HTTPS');
   });
-  it('creates one scoped connection and never accepts passwords or saves credentials', async () => {
+  it('creates one scoped connection with health checks, and saves sign-in details at Kernel only when the person opts in', async () => {
     const f = fakeClient();
     const state = await beginMerchantAuth(f.client, store, 'owner', true);
-    expect(f.connections.create).toHaveBeenCalledWith(expect.objectContaining({ domain: 'target.com', profile_name: 'aeri-owner-target-com', save_credentials: false, health_checks: false, auto_reauth: false }));
+    expect(f.connections.create).toHaveBeenCalledWith(expect.objectContaining({ domain: 'target.com', profile_name: 'aeri-owner-target-com', save_credentials: false, health_checks: true, auto_reauth: false }));
+    const remembered = fakeClient();
+    await beginMerchantAuth(remembered.client, store, 'owner', true, { stealth: false, proxy: { id: 'isp' } }, true);
+    expect(remembered.connections.create).toHaveBeenCalledWith(expect.objectContaining({ save_credentials: true, auto_reauth: true, health_checks: true, browser: expect.objectContaining({ stealth: false, proxy: { id: 'isp' } }) }));
     expect(state).toMatchObject({ connectionId: 'con_1', flowStatus: 'IN_PROGRESS', hostedUrl: 'https://login.kernel.sh/private' });
     expect(state).not.toHaveProperty('profile_name');
   });
@@ -35,10 +42,15 @@ describe('managed retailer authentication', () => {
   });
   it('loads only the authenticated saved retailer profile and preserves its proxy', async () => {
     const f = fakeClient([], { retrieve: vi.fn(async () => ({ ...connection, status: 'AUTHENTICATED', flow_status: 'SUCCESS', browser: { proxy: { id: 'proxy_1' } } })) });
-    expect(await merchantBrowserOptions(f.client, store, 'con_1')).toMatchObject({ profile: { name: 'aeri-owner-target-com', save_changes: true }, proxy: { id: 'proxy_1' }, headless: false });
+    expect(await merchantBrowserOptions(f.client, store, 'con_1')).toMatchObject({ profile: { name: 'aeri-owner-target-com', save_changes: false }, proxy: { id: 'proxy_1' }, headless: false });
     await expect(merchantBrowserOptions(f.client, 'https://walmart.com', 'con_1')).rejects.toThrow('another retailer');
     const pending = fakeClient();
     await expect(merchantBrowserOptions(pending.client, store, 'con_1')).rejects.toThrow('Complete');
+  });
+  it('keeps the store’s working proxy when a sign-in only says "default", so Target never runs from a datacenter IP', async () => {
+    const f = fakeClient([], { retrieve: vi.fn(async () => ({ ...connection, status: 'AUTHENTICATED', flow_status: 'SUCCESS', browser: { proxy: { mode: 'default' }, stealth: true } })) });
+    const site = { stealth: false, headless: false, proxy: { id: 'isp_proxy' } };
+    expect(await merchantBrowserOptions(f.client, store, 'con_1', site)).toMatchObject({ stealth: false, proxy: { id: 'isp_proxy' }, profile: { name: 'aeri-owner-target-com' } });
   });
   it('returns sanitized status and disconnects only the owner’s profile', async () => {
     const f = fakeClient([], { retrieve: vi.fn(async () => ({ ...connection, credential: { name: 'private' }, live_view_url: 'private' })) });

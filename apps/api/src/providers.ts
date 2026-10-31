@@ -11,14 +11,14 @@ export function providerStatus() {
   return {
     gemini: Boolean(process.env.GEMINI_API_KEY), neon: Boolean(process.env.DATABASE_URL),
     aiGateway: gatewayReady(), kernel: Boolean(process.env.KERNEL_API_KEY), exa: Boolean(process.env.EXA_API_KEY),
-    agentMail: Boolean(process.env.AGENTMAIL_WEBHOOK_SECRET),
+    agentMail: Boolean(process.env.AGENTMAIL_API_KEY || process.env.AGENTMAIL_WEBHOOK_SECRET),
     /** Video and photo understanding: direct Gemini, or the Gateway's Gemini route once its probe passed. */
     vision: Boolean(process.env.GEMINI_API_KEY) || gatewayVideo,
     voice: Boolean(process.env.GEMINI_API_KEY) || (gatewayReady() && !!process.env.NEON_AI_GATEWAY_VISION_MODEL && process.env.NEON_AI_GATEWAY_AUDIO_VERIFIED === '1'),
   };
 }
 
-const secretNames = ['APP_ACCESS_TOKEN', 'GEMINI_API_KEY', 'NEON_AI_GATEWAY_API_KEY', 'NEON_AI_GATEWAY_TOKEN', 'KERNEL_API_KEY', 'EXA_API_KEY', 'AGENTMAIL_WEBHOOK_SECRET', 'DATABASE_URL'];
+const secretNames = ['APP_ACCESS_TOKEN', 'GEMINI_API_KEY', 'NEON_AI_GATEWAY_API_KEY', 'NEON_AI_GATEWAY_TOKEN', 'KERNEL_API_KEY', 'EXA_API_KEY', 'AGENTMAIL_API_KEY', 'AGENTMAIL_WEBHOOK_SECRET', 'DATABASE_URL'];
 /** Removes configured secret values and bearer-style tokens so provider failures can be shown to the user. */
 export function scrub(message: string): string {
   let clean = message;

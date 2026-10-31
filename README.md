@@ -44,7 +44,7 @@ In another terminal:
 npm run dev:mobile
 ```
 
-On an iPhone, join the same Wi-Fi and scan the Metro QR code with Camera to open Expo Go. In Aeri Settings, use the computer’s LAN API URL and the private access code from ignored `.env`. `localhost` on the phone refers to the phone. The current running iPhone setup is documented in [LOCAL_RUN](docs/LOCAL_RUN.md). Camera, microphone, Liquid Glass and haptics need device verification.
+On an iPhone, join the same Wi-Fi and scan the Metro QR code with Camera to open Expo Go. Set the computer’s LAN API URL in `apps/mobile/.env.local`, then sign in with your email and the code Aeri sends. `localhost` on the phone refers to the phone. The current running iPhone setup is documented in [LOCAL_RUN](docs/LOCAL_RUN.md). Camera, microphone, Liquid Glass and haptics need device verification.
 
 The `DATABASE_URL=` override is intentional: local Expo work must not start card-backed Neon compute. Fly remains undeployed. Gateway is prepaid with no automatic top-ups; no manual credit purchase was made. The app persists a daily request quota (default 50, maximum 100), bounds tool steps and model output. These are request controls, not a monetary billing cap. Other provider balances are the earlier audit, not a fresh current balance.
 
@@ -78,4 +78,4 @@ Run `npm run typecheck` and `npm test`. Tests cover media fixtures with real ffm
 
 ## Privacy
 
-Every `/v1` call needs the access code stored on the phone in SecureStore. Provider keys stay server-side. Raw video is temporary and deleted after processing; accepted sightings retain small evidence frames. Sensitive Kernel live-view URLs stay in private server storage with a 15-minute TTL and never enter bootstrap state. Sessions close on cancellation, disconnect or order confirmation. Login credentials and payment details remain with Kernel/the retailer; telemetry and credential saving are disabled by default. AgentMail verifies signatures, but email contents are still untrusted. This is a private single-household MVP; a hosted API requires HTTPS and the spending gate.
+Everyone signs in with an emailed one-time code; every `/v1` call carries that person's session token (kept in SecureStore, stored on the server only as a hash) and only ever reaches that person's own data, store sign-ins and inbox. Provider keys stay server-side. Raw video is temporary and deleted after processing; accepted sightings retain small evidence frames. Sensitive Kernel live-view URLs stay in private server storage with a 15-minute TTL and never enter bootstrap state. Sessions close on cancellation, disconnect or order confirmation. Login credentials and payment details remain with Kernel/the retailer; telemetry and credential saving are disabled by default. AgentMail verifies signatures, but email contents are still untrusted. See [PRODUCTION](docs/PRODUCTION.md) for what is ready for other people and what is left.

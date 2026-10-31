@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from './app.js';
+import { singlePersonApp } from './testing.js';
 import { createStore, type Store } from './store.js';
 
 let directory = ''; let store: Store;
@@ -14,7 +14,7 @@ async function setup() {
   directory = await mkdtemp(join(tmpdir(), 'aeri-flow-'));
   process.env.DATA_DIR = directory; // frames and temp clips stay inside the test directory
   store = createStore('', directory);
-  return createApp(store, 'test-code');
+  return singlePersonApp(store, 'test-code');
 }
 const auth = { Authorization: 'Bearer test-code', 'Content-Type': 'application/json' };
 const json = async (response: Response) => { const body = await response.json() as any; if (!response.ok) throw new Error(`${response.status} ${JSON.stringify(body)}`); return body; };
@@ -124,7 +124,7 @@ describe('recorded video to confirmed memory', () => {
     const bodies: any[] = [];
     vi.stubGlobal('fetch', async (_: unknown, init?: RequestInit) => { bodies.push(JSON.parse(String(init?.body))); return geminiReply({ isRecipe: true, title: 'Chana masala', servings: 4, ingredients: [{ name: 'Chickpeas', amount: 2, unit: 'each', timestamp: '1:10' }, { name: 'Onion', amount: 1, unit: 'each', timestamp: '0:40', estimated: true }], instructions: ['Cook'] }); });
     const started = await json(await post(app, '/v1/chat', { text: 'cook this https://www.youtube.com/watch?v=abc' }));
-    expect(started.reply).toMatch(/watching the recipe now/);
+    expect(started.reply).toMatch(/Reading the recipe now/);
     await app.service.idle();
     expect(bodies[0].contents[0].parts[0]).toEqual({ fileData: { fileUri: 'https://www.youtube.com/watch?v=abc', mimeType: 'video/mp4' } });
     const s = await state(app);
@@ -158,6 +158,50 @@ describe('photo to product', () => {
 describe('retailer-neutral shopping', () => {
   const recipeCart = async (app: Awaited<ReturnType<typeof setup>>) => (await json(await post(app, '/v1/recipes', { url: 'https://youtu.be/demo123' }))).cart;
 
+  it('turns one approval across two stores into one order per store', async () => {
+    const app = await setup();
+    const cart = await recipeCart(app);
+    await post(app, `/v1/carts/${cart.id}/compare`, {});
+    await store.update(s => {
+      const draft = s.carts.find(c => c.id === cart.id)!;
+      draft.items.forEach((item, i) => { const merchant = i % 2 ? 'Walmart' : 'Target'; item.status = 'found'; item.offer = { merchant, title: `${merchant} ${item.name}`, url: `https://www.${merchant.toLowerCase()}.com/p/${i}`, priceCents: 100, packs: 1, verified: true, capturedAt: new Date().toISOString() }; });
+      draft.merchant = 'Target + Walmart';
+    });
+    const first = await json(await post(app, `/v1/carts/${cart.id}/approve`));
+    const carts = (await state(app)).carts;
+    const parent = carts.find((c: any) => c.id === cart.id);
+    expect(parent).toMatchObject({ status: 'cancelled' });
+    expect(parent.splitInto).toHaveLength(2);
+    const orders = carts.filter((c: any) => c.splitFrom === cart.id);
+    expect(orders.map((o: any) => [o.merchant, o.status])).toEqual([['Target', 'approved'], ['Walmart', 'approved']]);
+    expect(orders.every((o: any) => o.items.every((i: any) => i.offer.merchant === o.merchant))).toBe(true);
+    expect(orders.reduce((n: number, o: any) => n + o.items.length, 0)).toBe(parent.items.length);
+    expect(first.id).toBe(orders[0].id);
+    // Each store's order opens on its own; the combined list can't be opened.
+    expect((await post(app, `/v1/carts/${orders[0].id}/checkout`)).status).toBe(200);
+  });
+
+  it('puts the recommended option on the list, keeps unfound items to search in store, and sets aside out-of-stock items', async () => {
+    const app = await setup();
+    const cart = await recipeCart(app);
+    const proposal = await json(await post(app, `/v1/carts/${cart.id}/compare`, {}));
+    expect((await state(app)).carts[0]).toMatchObject({ basketId: proposal.recommendedId });
+    const unknown = proposal.baskets.find((b: any) => b.missing === 1);
+    await json(await post(app, `/v1/carts/${cart.id}/choose`, { basketId: unknown.id }));
+    // Search not finding an item keeps it on the list, for Aeri to look for in the store.
+    const unfound = (await state(app)).carts[0].items.filter((i: any) => !i.offer);
+    expect(unfound).toHaveLength(1);
+    expect(unfound[0].status).toBe('needed');
+    // Only an item the store showed as out of stock is set aside at approval.
+    await store.update(s => { s.carts.find(c => c.id === cart.id)!.items.find(i => i.id === unfound[0].id)!.status = 'unavailable'; });
+    const lacking = [unfound[0].name];
+    const approved = await json(await post(app, `/v1/carts/${cart.id}/approve`));
+    expect(approved.status).toBe('approved');
+    expect(approved.skipped.map((i: any) => i.name)).toEqual(lacking);
+    expect(approved.items.map((i: any) => i.name)).not.toContain(lacking[0]);
+    expect((await state(app)).events.find((e: any) => e.type === 'cart.items_skipped').data.names).toEqual(lacking);
+  });
+
   it('compares sample stores by all-in cost, freezes the chosen offers, and reconciles delivery', async () => {
     const app = await setup();
     const cart = await recipeCart(app);
@@ -172,9 +216,7 @@ describe('retailer-neutral shopping', () => {
     const chosen = await json(await post(app, `/v1/carts/${cart.id}/choose`, { basketId: best.id }));
     expect(chosen).toMatchObject({ merchant: 'Sample Valley Grocery', estimatedTotalCents: best.totalCents });
     expect(chosen.items.every((i: any) => i.offer?.priceCents > 0)).toBe(true);
-    // A store that lacks an item can't be approved until the gap is handled.
     await json(await post(app, `/v1/carts/${cart.id}/choose`, { basketId: unknown.id }));
-    expect((await post(app, `/v1/carts/${cart.id}/approve`)).status).toBe(400);
     await json(await post(app, `/v1/carts/${cart.id}/choose`, { basketId: best.id }));
     await json(await post(app, `/v1/carts/${cart.id}/approve`));
     const opened = await json(await post(app, `/v1/carts/${cart.id}/checkout`));

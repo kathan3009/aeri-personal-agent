@@ -127,12 +127,12 @@ export function MemoryTab() {
         <Group><Row title="Nothing remembered yet" subtitle={'Record a short video of a shelf, fridge or closet, or say “I have 6 eggs”.'} tone="muted" /></Group>
       </>}
       {places.map((place, index) => <View key={place || 'elsewhere'}>
-        <SectionHeader title={place || (places.length > 1 ? 'Elsewhere' : 'Your home')} action={index === 0 ? 'Add' : undefined} actionLabel="Add something you have" onAction={() => setItem('new')} />
+        <SectionHeader title={place ? titleCase(place) : places.length > 1 ? 'Elsewhere' : 'Your home'} action={index === 0 ? 'Add' : undefined} actionLabel="Add something you have" onAction={() => setItem('new')} />
         <Group>
           {inventory.filter(entry => (entry.location ?? '') === place).map(entry => {
             const fresh = freshness(entry, now);
             const detail = [entry.brand, entry.position, fresh.state === 'fresh' ? undefined : fresh.state === 'expired' ? `Past its date` : `Check again: ${fresh.reason}`].filter(Boolean).join(' · ');
-            return <Row key={entry.id} title={titleCase(entry.name)} subtitle={detail || undefined} onPress={() => setItem(entry)}
+            return <Row key={entry.id} title={titleCase(entry.name)} subtitle={detail || undefined} onPress={() => setItem(entry)} chevron
               accessibilityLabel={`${entry.name}, ${quantity(entry.quantity)}${detail ? `, ${detail}` : ''}. Edit`}
               right={<Text style={[t.number, { fontSize: 17, color: fresh.state === 'fresh' ? c.ink : '#875810' }]}>{quantity(entry.quantity)}</Text>} />;
           })}
@@ -142,7 +142,7 @@ export function MemoryTab() {
       <Group inset={preferences.length ? 16 : 54}>
         {preferences.map(([key, value]) => key.startsWith('note')
           ? <Row key={key} title={titleCase(value)} subtitle="Note" onPress={() => setPreference({ key, value, fixed: true })} />
-          : <Row key={key} title={titleCase(key)} onPress={() => setPreference({ key, value, fixed: true })} right={<Text style={[t.callout, { color: c.ink2, maxWidth: 170, textAlign: 'right' }]} numberOfLines={2}>{value}</Text>} />)}
+          : <Row key={key} title={titleCase(key)} chevron onPress={() => setPreference({ key, value, fixed: true })} right={<Text style={[t.callout, { color: c.ink2, maxWidth: 170, textAlign: 'right' }]} numberOfLines={2}>{value}</Text>} />)}
         {!preferences.length && preferenceIdeas.map(idea => <Row key={idea.key} title={titleCase(idea.key)} subtitle={idea.hint} tone="muted" onPress={() => setPreference({ key: idea.key, value: '', fixed: true })}
           left={<View style={styles.addIcon}><Plus size={15} color={c.accent} strokeWidth={2.4} /></View>} accessibilityLabel={`Add ${idea.key}`} />)}
       </Group>

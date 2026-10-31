@@ -58,6 +58,22 @@ const money = (text: string) => { const m = text.match(/\$\s?(\d+(?:\.\d{1,2})?)
  * Combines a one-time instruction ("same brand, under $20") with confirmed preferences. Preferences only apply when the
  * person saved them; the instruction wins when the two conflict.
  */
+const garments: Array<[string, RegExp]> = [
+  ['shirt', /\b(t-?shirts?|tees?|shirts?|tops?|hoodies?|sweat\w*|sweaters?|jackets?|coats?|blouses?|polos?)\b/i],
+  ['pants', /\b(jeans?|pants?|trousers?|shorts?|chinos?|leggings?|skirts?|joggers?)\b/i],
+  ['shoe', /\b(shoes?|sneakers?|boots?|sandals?|trainers?|loafers?|heels?)\b/i],
+];
+/** Hats, bags and other one-size things have no garment size. */
+export const garment = (text: string) => /\b(hats?|caps?|beanies?|bags?|belts?|scarf|scarves|gloves?|socks?|watch\w*|sunglasses)\b/i.test(text) ? undefined : garments.find(([, pattern]) => pattern.test(text))?.[0];
+/** The part of a saved size note that fits this item: "Large size T-shirt, 32 jeans" → "Large" for a shirt, "32" for jeans. */
+export function sizeFor(item: string, saved: string): string | undefined {
+  const kind = garment(item);
+  if (!kind) return undefined;
+  const part = saved.split(/[,;]|\band\b/).map(p => p.trim()).find(p => garments.find(([k]) => k === kind)![1].test(p));
+  if (!part) return undefined;
+  return part.replace(garments.find(([k]) => k === kind)![1], '').replace(/\bsize\b/i, '').replace(/\s+/g, ' ').trim() || undefined;
+}
+
 export function buildConstraints(spec: ProductSpec, instruction: string, preferences: Record<string, string>): Constraints {
   const text = instruction.toLowerCase();
   const applied: string[] = [];
@@ -79,9 +95,11 @@ export function buildConstraints(spec: ProductSpec, instruction: string, prefere
     else if (/^diet|dietary|vegan|vegetarian|gluten/.test(key)) for (const v of list(value)) { c.diet.push(v); applied.push(`${v} (saved)`); }
     else if (/favorite store|preferred store|store/.test(key)) for (const v of list(value)) { c.preferredMerchants.push(v); }
     else if (/^(zip|postal code|address|location|home)$/.test(key)) { c.location = value; applied.push(`Near ${value} (saved)`); }
-    else if (spec.category === 'clothing' && /size$/.test(key) && !c.size) {
-      const what = key.replace(/\s*size$/, '');
-      if (!what || nameOverlap(what, spec.name) > 0 || /cloth/.test(what)) { c.size = value; applied.push(`Your ${what || 'clothing'} size: ${value} (saved)`); }
+    else if (spec.category === 'clothing' && /sizes?$/.test(key) && !c.size) {
+      const what = key.replace(/\s*sizes?$/, '');
+      // "Large T-shirt, 32 jeans" holds several sizes; use only the one for this kind of item (none for a cap).
+      const size = (!what || /cloth/.test(what)) ? sizeFor(spec.name, value) : nameOverlap(what, spec.name) > 0 || garment(what) === garment(spec.name) && garment(what) ? value : undefined;
+      if (size) { c.size = size; applied.push(`Your ${garment(spec.name) ?? what ?? 'clothing'} size: ${size} (saved)`); }
     } else if (/^(brand|preferred brand|usual brand)\b/.test(key) && !c.brand) {
       const what = key.replace(/^(brand|preferred brand|usual brand)\s*(for)?\s*/, '');
       if (!what || nameOverlap(what, spec.name) > 0) { c.brand = value; applied.push(`Your usual brand: ${value} (saved)`); }
@@ -94,7 +112,8 @@ export function buildConstraints(spec: ProductSpec, instruction: string, prefere
 /** Search text for discovery. Brand and visible size are included only when the photo shows them. */
 export function searchQuery(spec: ProductSpec, constraints: Constraints): string {
   const brand = constraints.brand ?? (spec.uncertain.includes('brand') ? undefined : spec.brand);
-  const size = constraints.sizeRule === 'same' || constraints.size ? constraints.size ?? spec.size : undefined;
+  // A saved size is checked on each result, not typed into the search; it would pull in other products ("32 jeans").
+  const size = constraints.sizeRule === 'same' ? constraints.size ?? spec.size : undefined;
   return [constraints.organic ? 'organic' : '', brand, spec.productLine, spec.name, spec.variant, size, spec.category === 'clothing' && spec.color ? spec.color : '']
     .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
 }

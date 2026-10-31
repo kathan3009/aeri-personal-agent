@@ -48,3 +48,11 @@ describe('receipt evidence', () => {
     expect(() => receiptDedupKey('')).toThrow();
   });
 });
+
+describe('stores outside the built-in list', () => {
+  it('accepts the exact domain of the store the order was placed at', () => {
+    const shop: Cart = { ...cart, merchant: 'Kingarthurbaking', checkoutUrl: 'https://www.kingarthurbaking.com/cart' };
+    expect(matchReceipt({ ...message, sender: 'orders@kingarthurbaking.com' }, [shop])).toMatchObject({ cartId: 'cart' });
+    expect(matchReceipt({ ...message, sender: 'orders@kingarthurbaking.com.evil.shop' }, [shop])).toBeNull();
+  });
+});

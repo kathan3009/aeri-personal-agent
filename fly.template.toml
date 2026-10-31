@@ -1,4 +1,4 @@
-# Copy to fly.toml and replace the app name after creating the Fly app.
+# Copy to fly.toml, set the app name, then follow docs/DEPLOY.md.
 app = "replace-with-your-fly-app-name"
 primary_region = "sjc"
 
@@ -6,15 +6,35 @@ primary_region = "sjc"
   dockerfile = "Dockerfile"
 
 [env]
+  NODE_ENV = "production"
   HOST = "0.0.0.0"
   PORT = "8787"
+  # Aeri's memory, sign-in IDs and inbox ledger live on the volume, so they survive restarts.
+  DATA_DIR = "/data"
+  # On Fly, order emails arrive through the AgentMail webhook (which wakes the machine) instead of polling.
+  AGENTMAIL_POLLING = "0"
+  # Warm browser pools are billed while idle; leave them off on a machine that sleeps.
+  KERNEL_POOLS = "0"
+
+[mounts]
+  source = "aeri_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 8787
   force_https = true
-  auto_stop_machines = "stop"
+  # Keep one machine running: shopping runs finish in the background after the request returns, and store sign-in
+  # checks run every two minutes. Set to 0 only for a personal server where a sleeping agent is fine.
+  # With the file store (no DATABASE_URL) run exactly one machine; several machines need DATABASE_URL.
+  auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
 
 [[vm]]
   memory = "1gb"

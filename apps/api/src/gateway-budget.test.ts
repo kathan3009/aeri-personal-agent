@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { reserveGatewayRequests } from './gateway-budget.js';
+import { agentRun, refundGatewayRequests, reserveGatewayRequests } from './gateway-budget.js';
 
 let directory: string;
 const ledger = () => join(directory, 'gateway-quota.json');
@@ -14,12 +14,13 @@ beforeEach(async () => {
 afterEach(async () => { vi.useRealTimers(); vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }); });
 
 describe('persisted local Gateway request budget', () => {
-  it('serializes concurrent reservations and clamps configuration to at most 100 requests', async () => {
-    vi.stubEnv('NEON_AI_GATEWAY_DAILY_REQUEST_LIMIT', '100000');
+  it('serializes concurrent reservations and clamps configuration to at most 100000 requests', async () => {
+    vi.stubEnv('NEON_AI_GATEWAY_DAILY_REQUEST_LIMIT', '500000');
+    await writeFile(ledger(), JSON.stringify({ day: '2026-10-04', used: 99_900 }));
     const results = await Promise.allSettled(Array.from({ length: 110 }, () => reserveGatewayRequests()));
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(100);
     expect(results.filter(result => result.status === 'rejected')).toHaveLength(10);
-    expect(await saved()).toEqual({ day: '2026-10-04', used: 100 });
+    expect(await saved()).toEqual({ day: '2026-10-04', used: 100_000 });
     await expect(reserveGatewayRequests()).rejects.toThrow(/daily request limit/);
   });
   it('reserves possible model/tool steps in one operation and preserves usage after module reload', async () => {
@@ -29,6 +30,14 @@ describe('persisted local Gateway request budget', () => {
     await expect(restarted.reserveGatewayRequests(3)).rejects.toThrow(/daily request limit/);
     await restarted.reserveGatewayRequests(2);
     expect((await saved()).used).toBe(8);
+  });
+  it('gives back the steps an agent run did not use and reads only its final reply', async () => {
+    vi.stubEnv('NEON_AI_GATEWAY_DAILY_REQUEST_LIMIT', '10');
+    await reserveGatewayRequests(6);
+    const run = agentRun({ text: 'Asked.\nMade the list.', steps: [{ text: '' }, { text: 'Made the list.' }] }, 6);
+    expect(run).toEqual({ text: 'Made the list.', unused: 4 });
+    await refundGatewayRequests(run.unused);
+    expect((await saved()).used).toBe(2);
   });
   it('starts a fresh daily ledger rather than treating yesterday usage as today usage', async () => {
     vi.stubEnv('NEON_AI_GATEWAY_DAILY_REQUEST_LIMIT', '2'); await reserveGatewayRequests(2);

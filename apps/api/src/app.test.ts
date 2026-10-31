@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Webhook } from 'svix';
-import { createApp } from './app.js';
+import { singlePersonApp } from './testing.js';
 import { createStore, type Store } from './store.js';
 
 let directory = ''; let store: Store;
 afterEach(async () => { vi.unstubAllGlobals(); await store?.close(); if (directory) await rm(directory, { recursive: true, force: true }); });
-async function setup() { directory = await mkdtemp(join(tmpdir(), 'aeri-test-')); process.env.DATA_DIR = directory; store = createStore('', directory); return createApp(store, 'test-code'); }
+async function setup() { directory = await mkdtemp(join(tmpdir(), 'aeri-test-')); process.env.DATA_DIR = directory; store = createStore('', directory); return singlePersonApp(store, 'test-code'); }
 const auth = { Authorization: 'Bearer test-code', 'Content-Type': 'application/json' };
 async function json(response: Response) { return response.json() as Promise<any>; }
 
@@ -55,7 +55,12 @@ describe('authenticated household flow', () => {
     process.env.AGENTMAIL_WEBHOOK_SECRET = secret;
     try {
       const app = await setup();
-      const payload = JSON.stringify({ event_id: 'email-1', event_type: 'message.received', message: { subject: 'Your grocery order' } });
+      await app.accounts.setMailbox('default', { inboxId: 'inbox_mine', address: 'mine@agentmail.to', connectedAt: '2026-10-04T12:00:00.000Z', owned: true });
+      // Mail for an inbox that isn't anyone's is ignored.
+      const stranger = JSON.stringify({ event_id: 'email-0', event_type: 'message.received', message: { inbox_id: 'inbox_other', subject: 'Your grocery order' } });
+      const at0 = new Date();
+      expect((await app.request('/webhooks/agentmail', { method: 'POST', headers: { 'svix-id': 'msg_0', 'svix-timestamp': String(Math.floor(at0.getTime() / 1000)), 'svix-signature': new Webhook(secret).sign('msg_0', at0, stranger) }, body: stranger })).status).toBe(200);
+      const payload = JSON.stringify({ event_id: 'email-1', event_type: 'message.received', message: { inbox_id: 'inbox_mine', subject: 'Your grocery order' } });
       const timestamp = new Date();
       const headers = { 'svix-id': 'msg_1', 'svix-timestamp': String(Math.floor(timestamp.getTime() / 1000)), 'svix-signature': new Webhook(secret).sign('msg_1', timestamp, payload) };
       expect((await app.request('/webhooks/agentmail', { method: 'POST', headers, body: payload })).status).toBe(200);

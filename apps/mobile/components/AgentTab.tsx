@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type TextInput } from 'react-native';
+import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type FlatList, type NativeScrollEvent, type NativeSyntheticEvent, type TextInput } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
-import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder, useAudioRecorderState } from 'expo-audio';
-import * as Speech from 'expo-speech';
 import { ActionBarPrimitive, AuiIf, AssistantRuntimeProvider, ComposerPrimitive, ErrorPrimitive, MessagePrimitive, ThreadPrimitive, useAui, useAuiState, useLocalRuntime, type ChatModelAdapter, type ThreadMessageLike } from '@assistant-ui/react-native';
-import { ArrowUp, Camera, ChevronRight, CircleAlert, Clapperboard, FileVideo, Film, Image as ImageIcon, Link2, Mic, Plus, ScanSearch, Square, Volume2, Video } from 'lucide-react-native';
+import { ArrowUp, Camera, ChevronRight, CircleAlert, Clapperboard, FileVideo, Film, Image as ImageIcon, Link2, Mic, Plus, ScanSearch, Video } from 'lucide-react-native';
 import { useApp } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
 import { haptic } from '../lib/haptics';
@@ -13,14 +12,15 @@ import { useNav } from '../lib/nav';
 import { pendingFor } from '../lib/pending';
 import { c, greetingFor, host, lift, radius, t } from '../lib/theme';
 import { OfflineNotice, SettingsButton } from './Header';
-import { introDelay, Pop, Reveal, RevealWords, Shimmer } from './motion';
-import { ActionList, Aura, Button, Dot, Field, Glass, Group, noWebOutline, Row, Sheet } from './ui';
+import { introDelay, Pop, Reveal, RevealWords } from './motion';
+import { Activity, JumpToLatest, MessageActions, RichText, Sending, Suggestions, TimeStamp, Typing } from './Thread';
+import { VoiceMode } from './VoiceMode';
+import { ActionList, Aura, Button, Dot, Field, Group, noWebOutline, Row, Sheet } from './ui';
 
 // Messages created after this point animate in; restored history appears still.
 const openedAt = Date.now();
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type Work = null | 'scan' | 'voice' | 'photo';
+type Work = null | 'scan' | 'photo';
 type Picked = { uri: string; mimeType: string; name?: string; source: 'recorded' | 'library' | 'file' };
 const youtube = (value: string) => { try { const url = new URL(value.trim()); return /(^|\.)youtube\.com$|(^|\.)youtu\.be$/.test(url.hostname) ? url.toString() : null; } catch { return null; } };
 const social = (value: string) => { try { const host = new URL(value.trim()).hostname.replace(/^www\./, ''); return /(^|\.)(instagram\.com|tiktok\.com|facebook\.com|fb\.watch|x\.com|twitter\.com|threads\.net|snapchat\.com|pinterest\.com|pin\.it)$/.test(host) ? host : null; } catch { return null; } };
@@ -43,21 +43,29 @@ function UserText({ text }: { text: string }) {
 
 function Message() {
   const role = useAuiState(s => s.message.role);
+  const index = useAuiState(s => s.message.index);
+  const last = useAuiState(s => s.message.isLast);
   const running = useAuiState(s => s.message.status?.type === 'running');
-  const fresh = useAuiState(s => s.message.createdAt.getTime() > openedAt);
-  const body = role === 'user'
-    ? <MessagePrimitive.Root style={styles.userBubble}>
+  const createdAt = useAuiState(s => s.message.createdAt);
+  const previous = useAuiState(s => s.message.index > 0 ? s.thread.messages[s.message.index - 1]?.createdAt : undefined);
+  const fresh = createdAt.getTime() > openedAt;
+  const stamp = <TimeStamp date={createdAt} previous={previous} />;
+  if (role === 'user') {
+    const body = <MessagePrimitive.Root style={styles.userBubble}>
       <MessagePrimitive.Content renderText={({ part }) => <UserText text={part.text} />} />
-    </MessagePrimitive.Root>
-    : <AssistantMessage running={running} />;
-  if (role === 'user') return fresh ? <Reveal from="scale" style={styles.userWrap}>{body}</Reveal> : <View style={styles.userWrap}>{body}</View>;
-  return fresh ? <Reveal distance={12}>{body}</Reveal> : body;
+    </MessagePrimitive.Root>;
+    return <>{stamp}{fresh ? <Reveal from="scale" style={styles.userWrap}>{body}</Reveal> : <View style={styles.userWrap}>{body}</View>}</>;
+  }
+  const body = <AssistantMessage running={running} index={index} last={last} />;
+  return <>{stamp}{fresh ? <Reveal distance={12}>{body}</Reveal> : body}</>;
 }
 
-function AssistantMessage({ running }: { running: boolean }) {
+function AssistantMessage({ running, index, last }: { running: boolean; index: number; last: boolean }) {
   return <MessagePrimitive.Root style={styles.assistant}>
-    {running && <Shimmer style={[t.callout, { color: c.ink3 }]}>Thinking…</Shimmer>}
-    <MessagePrimitive.Content renderText={({ part }) => part.text ? <Text style={styles.assistantText} selectable>{part.text}</Text> : <View />} />
+    {!running && <Activity index={index} />}
+    {running && <Typing />}
+    <MessagePrimitive.Content renderText={({ part }) => part.text ? <RichText text={part.text} style={styles.assistantText} /> : <View />} />
+    {last && !running && <MessageActions />}
     <ErrorPrimitive.Root style={styles.errorBox}>
       <CircleAlert size={17} color={c.ember} strokeWidth={2} style={{ marginTop: 1 }} />
       <View style={{ flex: 1 }}>
@@ -69,7 +77,9 @@ function AssistantMessage({ running }: { running: boolean }) {
   </MessagePrimitive.Root>;
 }
 
-function Welcome({ onShow, onPhoto, onRecipe, voice }: { onShow: () => void; onPhoto: () => void; onRecipe: () => void; voice: boolean }) {
+const starters = ['I have 6 eggs in the fridge', 'Where’s the olive oil?', 'We’re out of milk', 'My shoe size is 9'];
+
+function Welcome({ onShow, onPhoto, onRecipe, onSuggest, voice }: { onShow: () => void; onPhoto: () => void; onRecipe: () => void; onSuggest: (text: string) => void; voice: boolean }) {
   const start = useRef(introDelay()).current;
   return <View style={styles.welcome}>
     <RevealWords text={greetingFor()} style={t.largeTitle} delay={start} />
@@ -79,7 +89,8 @@ function Welcome({ onShow, onPhoto, onRecipe, voice }: { onShow: () => void; onP
       <Reveal delay={start + 460}><Row title="Find something from a photo" subtitle="Snap it, say what you want. I'll compare stores." onPress={onPhoto} chevron left={<View style={styles.rowIcon}><ScanSearch size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
       <Reveal delay={start + 540}><Row title="Shop for a recipe video" subtitle="Paste a YouTube link. I'll list only what you're missing." onPress={onRecipe} chevron left={<View style={styles.rowIcon}><Clapperboard size={19} color={c.accent} strokeWidth={1.9} /></View>} /></Reveal>
     </Group>
-    <Reveal delay={start + 640}><Text style={[t.footnote, styles.hint]}>{voice ? 'Or tap the microphone and just tell me: “we’re out of milk”, “where’s the olive oil?”' : 'Or just type: “I have 6 eggs”, “where’s the olive oil?”'}</Text></Reveal>
+    <Reveal delay={start + 640}><Text style={[t.footnote, styles.hint]}>Or start with one of these:</Text></Reveal>
+    <Reveal delay={start + 700}><Suggestions items={starters} onPick={onSuggest} /></Reveal>
   </View>;
 }
 
@@ -90,17 +101,14 @@ function Dock() {
   if (!pending.length || keyboard) return null;
   const [first] = pending;
   const quiet = !!first.quiet;
-  return <Reveal key={first.key + first.title} distance={22}><Pressable onPress={() => { haptic.tap(); go(first.tab); }} style={({ pressed }) => [styles.dockWrap, pressed && { transform: [{ scale: 0.985 }] }]}
+  return <Reveal key={first.key + first.title} distance={14}><Pressable onPress={() => { haptic.tap(); go(first.tab); }} style={({ pressed }) => [styles.dockWrap, pressed && { opacity: 0.7 }]}
     accessibilityRole="button" accessibilityLabel={`${first.title}. ${first.detail}.${pending.length > 1 ? ` ${pending.length - 1} more waiting.` : ''}`}>
-    <Glass style={styles.dock}>
-      <Dot color={quiet ? c.ink3 : c.sunrise} size={9} />
-      <View style={{ flex: 1 }}>
-        <Text style={t.headline} numberOfLines={1}>{first.title}</Text>
-        <Text style={t.footnote} numberOfLines={1}>{first.detail}</Text>
-      </View>
+    <View style={[styles.dock, quiet ? styles.dockQuiet : styles.dockAttention]}>
+      <Dot color={quiet ? c.ink3 : c.sunrise} size={8} />
+      <Text style={styles.dockText} numberOfLines={1}><Text style={styles.dockTitle}>{first.title}</Text>  {first.detail}</Text>
       {pending.length > 1 && <Text style={[t.number, styles.more]}>+{pending.length - 1}</Text>}
-      <ChevronRight size={18} color={c.ink3} strokeWidth={2} />
-    </Glass>
+      <ChevronRight size={16} color={c.ink2} strokeWidth={2.2} />
+    </View>
   </Pressable></Reveal>;
 }
 
@@ -111,9 +119,14 @@ function Conversation({ work, linkOpen, setLinkOpen, onAttach, onScan, onPhoto, 
   const running = useAuiState(s => s.thread.isRunning);
   const empty = useAuiState(s => s.composer.text.trim().length === 0);
   const input = useRef<TextInput>(null);
+  const list = useRef<FlatList>(null);
+  const [away, setAway] = useState(false);
   const [link, setLink] = useState('');
+  const onScroll = ({ nativeEvent: { contentOffset, contentSize, layoutMeasurement } }: NativeSyntheticEvent<NativeScrollEvent>) =>
+    setAway(contentSize.height - layoutMeasurement.height - contentOffset.y > 240);
+  const suggest = (text: string) => { aui.composer.setText(text); input.current?.focus(); };
   const mode = running || work ? 'thinking' : 'idle';
-  const status = work === 'scan' ? 'Sending your video' : work === 'photo' ? 'Sending your photo' : work === 'voice' ? 'Understanding your voice' : running ? 'Thinking' : null;
+  const status = work === 'scan' ? 'Sending your video' : work === 'photo' ? 'Sending your photo' : running ? 'Thinking' : null;
   const linkOk = !!youtube(link) || videoFile(link);
   const sendLink = () => {
     if (!linkOk) return;
@@ -130,17 +143,22 @@ function Conversation({ work, linkOpen, setLinkOpen, onAttach, onScan, onPhoto, 
       <SettingsButton />
     </View>
     <View style={{ paddingHorizontal: 20 }}><OfflineNotice /></View>
-    <ThreadPrimitive.MessagesFlatList autoScroll keyboardShouldPersistTaps="handled" contentContainerStyle={styles.messages} showsVerticalScrollIndicator={false}
-      ListHeaderComponent={<AuiIf condition={s => s.thread.isEmpty}><Welcome onShow={onScan} onPhoto={onPhoto} onRecipe={() => setLinkOpen(true)} voice={voice} /></AuiIf>}>
-      {() => <Message />}
-    </ThreadPrimitive.MessagesFlatList>
+    <View style={{ flex: 1 }}>
+      <ThreadPrimitive.MessagesFlatList {...({ ref: list } as object)} autoScroll keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={styles.messages} showsVerticalScrollIndicator={false}
+        onScroll={onScroll} scrollEventThrottle={64}
+        ListFooterComponent={work === 'scan' || work === 'photo' ? <Sending kind={work} /> : null}
+        ListHeaderComponent={<AuiIf condition={s => s.thread.isEmpty}><Welcome onShow={onScan} onPhoto={onPhoto} onRecipe={() => setLinkOpen(true)} onSuggest={suggest} voice={voice} /></AuiIf>}>
+        {() => <Message />}
+      </ThreadPrimitive.MessagesFlatList>
+      <JumpToLatest visible={away} bottom={12} onPress={() => list.current?.scrollToEnd({ animated: true })} />
+    </View>
     <Dock />
     <View style={[styles.composerWrap, { paddingBottom: keyboard ? 8 : bottomInset }]}>
       <ComposerPrimitive.Root style={[styles.composer, lift]}>
         <Pressable onPress={() => { haptic.tap(); onAttach(); }} hitSlop={6} style={styles.plus} accessibilityRole="button" accessibilityLabel="Add a video, photo or link">
           <Plus size={20} color={c.accent} strokeWidth={2.2} />
         </Pressable>
-        <ComposerPrimitive.Input {...({ ref: input } as object)} placeholder="Message Aeri" placeholderTextColor={c.ink3}
+        <ComposerPrimitive.Input {...({ ref: input } as object)} placeholder={voice ? 'Message Aeri, or tap the mic' : 'Message Aeri'} placeholderTextColor={c.ink3}
           multiline style={styles.input} accessibilityLabel="Message Aeri" />
         {empty ? <Pressable onPress={onVoice} disabled={work !== null} style={[styles.trailing, styles.mic, work !== null && { opacity: 0.4 }]}
           accessibilityRole="button" accessibilityLabel="Talk with Aeri">
@@ -166,18 +184,6 @@ export function AgentTab() {
   const [work, setWork] = useState<Work>(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
-  const [voiceResult, setVoiceResult] = useState<{ transcript: string; reply: string } | null>(null);
-  const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [voiceSpeaking, setVoiceSpeaking] = useState(false);
-  const [voiceStarting, setVoiceStarting] = useState(false);
-  const [voiceRecording, setVoiceRecording] = useState(false);
-  const voiceSession = useRef(0);
-  const voicePlayback = useRef(0);
-  const voiceBusy = useRef<number | null>(null);
-  const voiceAudioReset = useRef<Promise<void>>(Promise.resolve());
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const recorderState = useAudioRecorderState(recorder);
-  const recording = voiceRecording || recorderState.isRecording;
   const initial = useRef<ThreadMessageLike[]>(toThread(state?.messages ?? []));
   const adapter = useMemo<ChatModelAdapter>(() => ({
     async run({ messages }) {
@@ -218,7 +224,7 @@ export function AgentTab() {
   };
   const sendVideo = async (video: Picked, purpose: 'household' | 'recipe') => {
     try {
-      setWork('scan'); toast(purpose === 'recipe' ? 'Reading your recipe video…' : 'Mapping your video…', 'working');
+      setWork('scan');
       await upload('/v1/scans', video.uri, 'video', video.mimeType, { purpose, source: video.source }, video.name);
       await refresh(); haptic.success(); dismissToast();
       go(purpose === 'recipe' ? 'tasks' : 'memory');
@@ -246,7 +252,7 @@ export function AgentTab() {
     if (!photo) return;
     const picked = photo; setPhoto(null);
     try {
-      setWork('photo'); toast('Looking at your photo…', 'working');
+      setWork('photo');
       await upload('/v1/photos', picked.uri, 'image', picked.mimeType, { instruction: instruction.trim() });
       await refresh(); haptic.success(); dismissToast(); go('tasks');
     } catch (error) { dismissToast(); toast((error as Error).message, 'error'); }
@@ -254,7 +260,7 @@ export function AgentTab() {
   };
   const onScan = () => ask({
     title: 'Show me where things are',
-    message: vision ? 'Walk slowly past one fridge, pantry, shelf or closet for 20 to 40 seconds. Say anything that’s hard to see, like “two cartons of oat milk”. You confirm everything before I remember it.' : 'Video understanding isn’t connected yet, so I’ll show a sample map for you to try the review. Nothing is saved without your OK.',
+    message: vision ? 'Walk slowly past one fridge, pantry, shelf or closet for 20 to 40 seconds. Say anything that’s hard to see, like “two cartons of oat milk”. You confirm everything before I remember it.' : 'Video understanding isn’t connected yet, so you’ll see a sample map. Nothing is saved until you confirm it.',
     actions: [
       ...(Platform.OS === 'web' ? [] : [{ label: 'Record a video', icon: Video, onPress: () => void startVideo('recorded') }]),
       { label: 'Choose from your library', icon: Film, onPress: () => void startVideo('library') },
@@ -278,93 +284,16 @@ export function AgentTab() {
       { label: 'Paste a recipe link', detail: 'YouTube or a video file', icon: Link2, onPress: () => setLinkOpen(true) },
     ],
   });
-  const stopVoicePlayback = () => {
-    voicePlayback.current += 1;
-    setVoiceSpeaking(false);
-    return Speech.stop().catch(() => undefined);
-  };
-  const closeVoice = () => {
-    voiceSession.current += 1;
-    setVoiceOpen(false);
-    setVoiceStarting(false);
-    setVoiceRecording(false);
-    setWork(current => current === 'voice' ? null : current);
-    void stopVoicePlayback();
-    // A permission dialog or recorder preparation may still be completing. Its session check
-    // prevents a late start after this sheet is dismissed.
-    voiceAudioReset.current = (async () => {
-      if (recorder.isRecording) await recorder.stop().catch(() => undefined);
-      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
-    })();
-  };
-  useEffect(() => () => {
-    voiceSession.current += 1;
-    voicePlayback.current += 1;
-    void Speech.stop().catch(() => undefined);
-    if (recorder.isRecording) void recorder.stop().catch(() => undefined);
-    void setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
-  }, [recorder]);
-  const speak = async (reply: string) => {
-    const session = voiceSession.current;
-    const playback = ++voicePlayback.current;
-    await Speech.stop().catch(() => undefined);
-    if (session !== voiceSession.current || playback !== voicePlayback.current) return;
-    setVoiceSpeaking(true);
-    const finished = () => { if (session === voiceSession.current && playback === voicePlayback.current) setVoiceSpeaking(false); };
-    Speech.speak(reply, { language: 'en-US', rate: 0.96, onDone: finished, onStopped: finished, onError: finished });
-  };
-  const onVoice = async () => {
-    const session = voiceSession.current;
-    if (voiceBusy.current === session) return;
-    voiceBusy.current = session;
-    if (recorder.isRecording) {
-      try {
-        setWork('voice'); setVoiceRecording(false); haptic.press(); await recorder.stop();
-        await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
-        if (session !== voiceSession.current) return;
-        if (!recorder.uri) throw new Error('No audio was captured. Try speaking again.');
-        const result = await upload<{ transcript: string; reply: string }>('/v1/voice', recorder.uri, 'audio', 'audio/m4a');
-        if (session !== voiceSession.current) return;
-        const latest = await request<{ state: { messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }> } }>('/v1/bootstrap');
-        if (session !== voiceSession.current) return;
-        runtime.thread.reset(toThread(latest.state.messages));
-        await refresh();
-        if (session === voiceSession.current) { setVoiceResult(result); void speak(result.reply); }
-      } catch (error) { if (session === voiceSession.current) setVoiceError((error as Error).message); }
-      finally {
-        if (voiceBusy.current === session) voiceBusy.current = null;
-        if (session === voiceSession.current) setWork(null);
-        if (session === voiceSession.current) await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
-      }
-      return;
-    }
-    if (!providers?.voice) { voiceBusy.current = null; setVoiceError('Voice needs a Gemini API key. You can type, or use your keyboard’s dictation.'); return; }
-    setVoiceStarting(true);
+  // After a spoken turn, show it in the thread with what Aeri did.
+  const syncVoiceTurn = async () => {
     try {
-      const permission = await AudioModule.requestRecordingPermissionsAsync();
-      if (session !== voiceSession.current) return;
-      if (!permission.granted) { setVoiceError('Microphone access is off. Turn it on in the Settings app to talk with Aeri.'); return; }
-      setVoiceError(null); setVoiceResult(null); await stopVoicePlayback();
-      if (session !== voiceSession.current) return;
-      await voiceAudioReset.current;
-      if (session !== voiceSession.current) return;
-      haptic.press();
-      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      if (session !== voiceSession.current) return;
-      await recorder.prepareToRecordAsync();
-      if (session !== voiceSession.current) return;
-      recorder.record(); setVoiceRecording(true);
-    } catch (error) { if (session === voiceSession.current) setVoiceError((error as Error).message); }
-    finally {
-      if (voiceBusy.current === session) voiceBusy.current = null;
-      if (session === voiceSession.current) setVoiceStarting(false);
-      if (session === voiceSession.current && !recorder.isRecording) await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
-    }
+      const latest = await request<{ state: { messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }> } }>('/v1/bootstrap');
+      if (!runtime.thread.getState().isRunning) runtime.thread.reset(toThread(latest.state.messages));
+      await refresh();
+    } catch { /* the next refresh catches up */ }
   };
   return <AssistantRuntimeProvider runtime={runtime}>
-    <Conversation work={work} linkOpen={linkOpen} setLinkOpen={setLinkOpen} onAttach={onAttach} onScan={onScan} onPhoto={onPhoto} voice={!!providers?.voice} onVoice={() => {
-      voiceSession.current += 1; setVoiceResult(null); setVoiceError(providers?.voice ? null : 'Voice needs a Gemini API key. You can type, or use your keyboard’s dictation.'); setVoiceOpen(true);
-    }} />
+    <Conversation work={work} linkOpen={linkOpen} setLinkOpen={setLinkOpen} onAttach={onAttach} onScan={onScan} onPhoto={onPhoto} voice={!!providers?.voice} onVoice={() => { haptic.press(); setVoiceOpen(true); }} />
     <Sheet visible={!!purposeFor} onClose={() => setPurposeFor(null)} title="What’s in this video?" message="I read the two kinds differently.">
       {purposeFor && <ActionList onDone={() => setPurposeFor(null)} actions={[
         { label: 'Where things are at home', detail: 'Fridge, pantry, shelf or closet', icon: Video, onPress: () => void sendVideo(purposeFor, 'household') },
@@ -379,22 +308,7 @@ export function AgentTab() {
       <View style={styles.ideas}>{['Same brand', 'Cheapest nearby', 'Something like this'].map(idea => <Pressable key={idea} onPress={() => { haptic.tap(); setInstruction(idea); }} style={styles.idea}><Text style={[t.subhead, { color: c.accent, fontWeight: '600' }]}>{idea}</Text></Pressable>)}</View>
       <Button label="Find it" icon={ScanSearch} onPress={() => void sendPhoto()} style={{ marginTop: 16 }} />
     </Sheet>
-    <Sheet visible={voiceOpen} onClose={closeVoice} title="Talk with Aeri" message="Tell me what you have, what you need, or what you want to remember.">
-      <View style={styles.voiceCenter}>
-        <Aura size={88} mode={recording ? 'listening' : work === 'voice' ? 'thinking' : voiceSpeaking ? 'speaking' : 'idle'} />
-        <Text style={[t.title3, styles.voiceStatus]} accessibilityLiveRegion="polite">{voiceStarting ? 'Getting ready…' : recording ? 'Listening…' : work === 'voice' ? 'Thinking…' : voiceSpeaking ? 'Speaking…' : voiceResult ? 'Ready for another thought' : 'Tap to start'}</Text>
-        {voiceError && <Text style={[t.footnote, styles.voiceError]}>{voiceError}</Text>}
-        {voiceResult && <ScrollView style={styles.voiceTranscript} contentContainerStyle={styles.voiceTranscriptContent} accessibilityLabel="Last voice exchange">
-          <Text style={[t.footnote, { color: c.ink3 }]}>YOU SAID</Text>
-          <Text style={[t.callout, { color: c.ink, marginTop: 4 }]}>{voiceResult.transcript}</Text>
-          <Text style={[t.footnote, { color: c.ink3, marginTop: 16 }]}>AERI</Text>
-          <Text style={[t.callout, { color: c.ink, marginTop: 4 }]}>{voiceResult.reply}</Text>
-        </ScrollView>}
-      </View>
-      <Button label={recording ? 'Finish speaking' : 'Start talking'} icon={recording ? Square : Mic} onPress={() => void onVoice()} loading={work === 'voice' || voiceStarting} disabled={work === 'voice' || voiceStarting || !providers?.voice} accessibilityHint={recording ? 'Sends this voice turn to Aeri' : 'Records one voice turn'} />
-      {voiceResult && <Button label={voiceSpeaking ? 'Stop voice' : 'Play reply'} icon={Volume2} tone="plain" onPress={() => voiceSpeaking ? void stopVoicePlayback() : void speak(voiceResult.reply)} style={{ marginTop: 6 }} />}
-      <Button label="Done" tone="plain" onPress={closeVoice} style={{ marginTop: 2 }} />
-    </Sheet>
+    {voiceOpen && <VoiceMode visible onClose={() => setVoiceOpen(false)} onTurn={syncVoiceTurn} />}
   </AssistantRuntimeProvider>;
 }
 
@@ -402,22 +316,26 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingBottom: 8 },
   messages: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 16, flexGrow: 1 },
   welcome: { paddingTop: 36, paddingBottom: 12 },
-  hint: { marginTop: 16, marginHorizontal: 6, textAlign: 'center', color: c.ink3 },
+  hint: { marginTop: 22, marginHorizontal: 4, color: c.ink2 },
   photo: { width: '100%', height: 180, borderRadius: radius.group, marginTop: 16, backgroundColor: c.tint },
   ideas: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   idea: { paddingHorizontal: 12, minHeight: 34, justifyContent: 'center', borderRadius: radius.pill, backgroundColor: c.tint },
   rowIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.tint, alignItems: 'center', justifyContent: 'center' },
   userWrap: { alignSelf: 'flex-end', maxWidth: '82%' },
-  userBubble: { backgroundColor: c.surface, borderRadius: 20, borderBottomRightRadius: 6, paddingHorizontal: 15, paddingVertical: 10, marginTop: 18 },
+  userBubble: { backgroundColor: c.surface, borderRadius: 20, borderBottomRightRadius: 6, paddingHorizontal: 15, paddingVertical: 10, marginTop: 18, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(15,43,64,0.1)' },
   userText: { ...t.callout, color: c.ink },
   linkChip: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 2 },
   linkIcon: { width: 32, height: 32, borderRadius: 9, backgroundColor: c.tint, alignItems: 'center', justifyContent: 'center' },
-  assistant: { alignSelf: 'stretch', marginTop: 18, paddingRight: 24 },
+  assistant: { alignSelf: 'stretch', marginTop: 16, paddingRight: 20 },
   assistantText: { ...t.callout, lineHeight: 24, color: c.ink },
   errorBox: { flexDirection: 'row', gap: 10, backgroundColor: c.emberTint, borderRadius: 14, padding: 12, marginTop: 4 },
   retry: { alignSelf: 'flex-start', paddingVertical: 6, marginTop: 2 },
-  dockWrap: { paddingHorizontal: 16, paddingBottom: 10 },
-  dock: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: radius.dock, paddingHorizontal: 16, paddingVertical: 12, overflow: 'hidden' },
+  dockWrap: { paddingHorizontal: 16, paddingBottom: 8 },
+  dock: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: radius.pill, paddingHorizontal: 14, minHeight: 40 },
+  dockAttention: { backgroundColor: c.sunriseTint },
+  dockQuiet: { backgroundColor: c.tint },
+  dockText: { ...t.footnote, color: c.ink2, flex: 1 },
+  dockTitle: { fontWeight: '600', color: c.ink },
   more: { fontSize: 13, color: c.ink2 },
   composerWrap: { paddingHorizontal: 16 },
   composer: { flexDirection: 'row', alignItems: 'flex-end', backgroundColor: c.surface, borderRadius: 26, padding: 6, borderWidth: StyleSheet.hairlineWidth, borderColor: c.hairline, minHeight: 52 },
@@ -426,9 +344,4 @@ const styles = StyleSheet.create({
   trailing: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   mic: { backgroundColor: c.fill },
   send: { backgroundColor: c.accent },
-  voiceCenter: { alignItems: 'center', paddingTop: 20, paddingBottom: 18 },
-  voiceStatus: { marginTop: 18, textAlign: 'center' },
-  voiceError: { color: c.ember, marginTop: 10, textAlign: 'center' },
-  voiceTranscript: { alignSelf: 'stretch', backgroundColor: c.canvas, borderRadius: 18, marginTop: 18, maxHeight: 180 },
-  voiceTranscriptContent: { padding: 16 },
 });

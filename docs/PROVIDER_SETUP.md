@@ -1,6 +1,6 @@
 # Provider activation and verification
 
-All secrets belong in the ignored root `.env` or a server secret manager. The phone needs only the public API origin and private access code. Restart the API after configuration changes. No secret belongs in `EXPO_PUBLIC_*`, screenshots, prompts, logs or tracked files.
+All secrets belong in the ignored root `.env` or a server secret manager. The phone needs only the public API origin; people sign in with an emailed code. Restart the API after configuration changes. No secret belongs in `EXPO_PUBLIC_*`, screenshots, prompts, logs or tracked files.
 
 ## Current configuration — October 4, 2026
 

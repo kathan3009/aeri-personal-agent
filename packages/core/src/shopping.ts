@@ -34,6 +34,8 @@ export const basketLineSchema = z.object({
   needId: z.string(), name: z.string(), offerId: z.string().optional(), merchant: z.string().optional(), title: z.string().optional(),
   packs: z.number().int().nonnegative(), lineCents: z.number().int().nonnegative().nullable(),
   status: z.enum(['matched', 'unavailable', 'price_unknown']), note: z.string().optional(),
+  /** Set when the first store didn't have this item and it was moved to `merchant`. */
+  movedFrom: z.string().optional(),
 });
 export type BasketLine = z.infer<typeof basketLineSchema>;
 export const basketSchema = z.object({
@@ -53,6 +55,8 @@ export const proposalSchema = z.object({
   source: z.enum(['fixture', 'live']), chosenId: z.string().optional(),
   offers: z.array(offerSchema).default([]), quotes: z.array(storeQuoteSchema).default([]),
   status: z.enum(['searching', 'ready', 'failed']).default('ready'), error: z.string().optional(),
+  /** Which stores were checked and why, so the choice of stores is visible rather than assumed. */
+  stores: z.array(z.object({ merchant: z.string(), reason: z.string() })).optional(),
 });
 export type Proposal = z.infer<typeof proposalSchema>;
 
@@ -116,6 +120,41 @@ function totals(lines: BasketLine[], quotes: StoreQuote[], request: ShoppingRequ
 }
 
 const SPLIT_PENALTY_CENTS = 300;
+const MAX_STORES = 3;
+
+/**
+ * Baskets that get the whole list: start at one store, then take what it lacks from whichever other store has the
+ * most of the rest (up to three stores). Items stay at the first store whenever it has them, so fewer orders are split.
+ */
+function coverage(needs: ShoppingNeed[], offers: Offer[], usable: StoreQuote[], singles: Basket[], request: ShoppingRequest, id: () => string): Basket[] {
+  const has = (basket: Basket, needId: string) => basket.lines.some(l => l.needId === needId && l.status !== 'unavailable');
+  const found = new Map<string, Basket>();
+  usable.forEach((primary, index) => {
+    const start = singles[index];
+    if (!start.missing) return;
+    const assign = new Map(needs.map(need => [need.id, primary.merchant]));
+    const stores = [primary];
+    let left = needs.filter(need => !has(start, need.id));
+    while (left.length && stores.length < MAX_STORES) {
+      const next = usable.map((quote, j) => ({ quote, basket: singles[j], gain: left.filter(need => has(singles[j], need.id)).length }))
+        .filter(option => !stores.includes(option.quote) && option.gain > 0 && option.quote.fulfillment === primary.fulfillment)
+        .sort((a, b) => b.gain - a.gain || a.basket.knownTotalCents - b.basket.knownTotalCents)[0];
+      if (!next) break;
+      stores.push(next.quote);
+      for (const need of left) if (has(next.basket, need.id)) assign.set(need.id, next.quote.merchant);
+      left = left.filter(need => !has(next.basket, need.id));
+    }
+    if (stores.length < 2) return;
+    const order = new Map(needs.map((need, i) => [need.id, i]));
+    const lines = stores.flatMap(quote => single(needs, offers, quote, request, id, assign).lines.map(line => quote === primary ? line : { ...line, movedFrom: primary.merchant }))
+      .sort((a, b) => order.get(a.needId)! - order.get(b.needId)!);
+    const basket = totals(lines, stores, request, id, offers);
+    const key = [...basket.merchants].sort().join('|');
+    const prior = found.get(key);
+    if (!prior || basket.missing < prior.missing || (basket.missing === prior.missing && basket.knownTotalCents < prior.knownTotalCents)) found.set(key, basket);
+  });
+  return [...found.values()];
+}
 /**
  * Builds one basket per store and, where it actually saves money after both stores' fees plus a small inconvenience
  * allowance, one two-store split. Ranks by the person's goal; incomplete or over-budget baskets never outrank a
@@ -145,6 +184,10 @@ export function compareBaskets(needs: ShoppingNeed[], offers: Offer[], quotes: S
     const bestSingle = Math.min(ba.totalCents!, bb.totalCents!);
     if (split.complete && split.totalCents! + SPLIT_PENALTY_CENTS < bestSingle) baskets.push(split);
   }
+  const singles = baskets.slice(0, usable.length);
+  const fewestMissing = Math.min(...singles.map(b => b.missing));
+  // Only offer a multi-store basket when it actually finds more of the list than any one store.
+  baskets.push(...coverage(needs, offers, usable, singles, request, id).filter(b => b.missing < fewestMissing));
   const goal = (x: Basket) => request.optimize === 'nearest' ? x.distanceMiles ?? Infinity
     : request.optimize === 'fastest' ? x.etaMinutes ?? Infinity
     : request.optimize === 'preferred_store' ? (x.merchants.some(m => request.preferredMerchants.some(p => normalizeName(m).includes(normalizeName(p)))) ? 0 : 1) * 1e9 + x.knownTotalCents
@@ -155,37 +198,36 @@ export function compareBaskets(needs: ShoppingNeed[], offers: Offer[], quotes: S
 }
 
 const miles = (b: Basket) => b.distanceMiles == null ? 'distance unknown' : `${b.distanceMiles.toFixed(1)} mi${b.distanceMeasure === 'straight_line' ? ' straight-line' : b.distanceMeasure === 'driving' ? ' driving' : ''}`;
-/** "2 prices, fees, tax and tip" rather than one entry per store. */
-function unknownSummary(b: Basket): string {
-  const parts: string[] = [];
-  const prices = b.unknowns.find(u => /price/.test(u));
-  if (prices) parts.push(prices);
-  if (b.unknowns.some(u => /fee/.test(u))) parts.push('fees');
-  if (b.unknowns.some(u => /tax/.test(u))) parts.push('tax');
-  if (b.unknowns.some(u => /tip/.test(u))) parts.push('tip');
-  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0] ?? '';
+const total = (b: Basket) => b.complete ? `${dollars(b.totalCents!)} all-in`
+  : b.knownTotalCents === 0 && b.lines.every(l => l.status !== 'matched') ? 'no prices read yet' : `${dollars(b.knownTotalCents)} so far`;
+const count = (n: number) => `${n} ${n === 1 ? 'item' : 'items'}`;
+/** "Target doesn't have 4 items; Walmart has 3 and Kroger has 1." */
+function moves(b: Basket): string | null {
+  const moved = b.lines.filter(l => l.movedFrom);
+  if (!moved.length) return null;
+  const by = new Map<string, number>();
+  for (const line of moved) by.set(line.merchant!, (by.get(line.merchant!) ?? 0) + 1);
+  const parts = [...by].map(([merchant, n]) => `${merchant} has ${n === moved.length && by.size === 1 ? (n === 1 ? 'it' : 'them') : n}`);
+  return `${moved[0].movedFrom} doesn’t have ${count(moved.length)}; ${parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0]}.`;
 }
-const total = (b: Basket) => b.complete ? `${dollars(b.totalCents!)} all-in` : `${dollars(b.knownTotalCents)} so far, without ${unknownSummary(b)}`;
 /** A short, checkable explanation built only from the numbers in the baskets. */
 export function explain(baskets: Basket[], request: ShoppingRequest, rejected: Array<{ merchant: string; reason: string }> = []): string {
   if (!baskets.length) return rejected.length ? `No store fits: ${rejected.map(r => `${r.merchant} (${r.reason})`).join('; ')}.` : 'No store options were found.';
   const [best, next] = baskets;
   const parts: string[] = [];
   const goal = request.optimize === 'nearest' ? 'closest' : request.optimize === 'fastest' ? 'fastest' : request.optimize === 'preferred_store' ? 'your preferred store' : 'lowest all-in cost';
+  const moved = moves(best);
+  if (moved) parts.push(moved);
   // A basket with unknown prices or fees is never called the cheapest.
-  if (best.complete || request.optimize !== 'lowest_total') parts.push(`${best.label} is the ${goal}: ${total(best)}, ${miles(best)}.`);
-  else parts.push(`No store has a complete total yet. ${best.label}: ${total(best)}${best.missing ? `, missing ${best.missing} ${best.missing === 1 ? 'item' : 'items'}` : ''}.`);
-  if (best.complete && best.missing) parts.push(`It is missing ${best.missing} ${best.missing === 1 ? 'item' : 'items'}.`);
-  if (next) {
-    if (best.complete && next.complete) {
-      const diff = next.totalCents! - best.totalCents!;
-      parts.push(diff > 0 ? `${next.label} costs ${dollars(diff)} more (${dollars(next.totalCents!)}), ${miles(next)}.` : `${next.label} is the same price, ${miles(next)}.`);
-    } else parts.push(`${next.label}: ${total(next)}${next.missing ? `, missing ${next.missing}` : ''}.`);
-    if (best.merchants.length > 1) parts.push(`Splitting saves more than ${dollars(SPLIT_PENALTY_CENTS)} after both stores' fees.`);
+  if (best.complete || request.optimize !== 'lowest_total') parts.push(`${best.label} is the ${goal}: ${total(best)}${best.distanceMiles != null ? `, ${miles(best)}` : ''}.`);
+  else parts.push(`${best.label}: ${best.lines.filter(l => l.status !== 'unavailable').length} of ${best.lines.length} items found, ${total(best)}.`);
+  if (next && best.complete && next.complete) {
+    const diff = next.totalCents! - best.totalCents!;
+    parts.push(diff > 0 ? `${next.label} costs ${dollars(diff)} more.` : `${next.label} is the same price.`);
+    if (best.merchants.length > 1 && !moved) parts.push(`Splitting saves more than ${dollars(SPLIT_PENALTY_CENTS)} after both stores' fees.`);
   }
+  if (!best.complete) parts.push('Fees, tax and any remaining prices are confirmed at checkout.');
   if (best.overBudget && request.budgetCents) parts.push(`Every option is over your ${dollars(request.budgetCents)} budget.`);
-  if (!best.complete && baskets.every(b => b.distanceMiles == null)) parts.push('Fees, tax and the store location appear at checkout.');
-  if (!best.verified) parts.push('Some prices come from search results, not the store page; they are checked again before checkout.');
   return parts.join(' ');
 }
 

@@ -6,6 +6,8 @@ import Kernel from '@onkernel/sdk';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { registerRetailerRoutes } from './retailer-api.js';
+import { createPeople, type AppEnv } from './people.js';
+import { singlePersonAccounts, testUser } from './testing.js';
 import { createStore, type Store } from './store.js';
 
 const token = 'test-owner-access', at = '2026-10-04T12:00:00.000Z';
@@ -24,10 +26,11 @@ function setup() {
   };
   const profiles = { delete: vi.fn(async () => {}) }, browsers = { deleteByID: vi.fn(async () => {}) };
   const client = { auth: { connections }, profiles, browsers } as unknown as Kernel;
-  const app = new Hono();
+  const app = new Hono<AppEnv>();
+  const user = testUser(token), people = createPeople(singlePersonAccounts(user, token), { storeFor: () => store });
   app.onError((e, c) => c.json({ error: e.message }, 400));
-  app.use('/v1/*', async (c, next) => { if (c.req.header('authorization') !== `Bearer ${token}`) return c.json({ error: 'unauthorized' }, 401); await next(); });
-  registerRetailerRoutes(app, store, token, { client, now: () => at });
+  app.use('/v1/*', async (c, next) => { if (c.req.header('authorization') !== `Bearer ${token}`) return c.json({ error: 'unauthorized' }, 401); c.set('person', people.forUser(user)); await next(); });
+  registerRetailerRoutes(app, { client, now: () => at });
   const request = (domain = 'target.com', method = 'GET', body?: unknown, auth = true) => app.request(`/v1/retailers/${domain}/auth`, { method,
     headers: { ...(auth ? { authorization: `Bearer ${token}` } : {}), 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   return { app, request, records, connections, profiles, browsers };
@@ -55,11 +58,19 @@ it('stores only opaque IDs privately and reuses one active flow', async () => {
   const status = await (await f.request()).json();
   expect(status).toMatchObject({ connected: true }); expect(status).not.toHaveProperty('hostedUrl'); expect(status).not.toHaveProperty('credential');
 });
-it('enforces the three-connection local limit before an external create', async () => {
+it('clears failed sign-ins before applying the connection limit, and names the stores when it is really full', async () => {
+  vi.stubEnv('KERNEL_MAX_STORE_CONNECTIONS', '3');
   const f = setup();
-  for (const domain of ['walmart.com', 'amazon.com', 'kroger.com']) await store.setMerchantConnection({ merchant: domain, connectionId: domain, createdAt: at });
-  expect((await f.request('target.com', 'POST', { consent: true })).status).toBe(409);
-  expect(f.connections.create).not.toHaveBeenCalled();
+  for (const domain of ['walmart.com', 'amazon.com', 'kroger.com']) {
+    f.records.set(domain, { id: domain, domain, profile_name: `aeri-${scope}-${domain.replace('.', '-')}`, status: domain === 'walmart.com' ? 'NEEDS_AUTH' : 'AUTHENTICATED', flow_status: domain === 'walmart.com' ? 'FAILED' : 'SUCCESS' });
+    await store.setMerchantConnection({ merchant: domain, connectionId: domain, createdAt: at });
+  }
+  expect((await f.request('target.com', 'POST', { consent: true })).status).toBe(200);
+  expect(await store.getMerchantConnection('walmart.com')).toBeNull();
+  const full = await f.request('costco.com', 'POST', { consent: true });
+  expect(full.status).toBe(409);
+  expect((await full.json()).error).toMatch(/You have 3 stores connected \(.*amazon\.com.*\)\. Disconnect one to add costco\.com\./);
+  vi.unstubAllEnvs();
 });
 it('disconnects saved account and cart sessions, invalidates approval and removes private IDs', async () => {
   const f = setup();

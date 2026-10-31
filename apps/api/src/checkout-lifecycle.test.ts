@@ -3,14 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Cart } from '@personal-agent/core';
-import { createApp } from './app.js';
+import { singlePersonApp } from './testing.js';
 import { prepareMerchantCart, closeSession, type PreparedCart } from './market.js';
 import { disconnectMerchantAuth } from './merchant-auth.js';
 import { createStore, type Store } from './store.js';
 
 vi.mock('./market.js', async () => ({ ...(await vi.importActual<typeof import('./market.js')>('./market.js')), prepareMerchantCart: vi.fn(), closeSession: vi.fn(async () => {}) }));
 vi.mock('./merchant-auth.js', async () => ({ ...(await vi.importActual<typeof import('./merchant-auth.js')>('./merchant-auth.js')), disconnectMerchantAuth: vi.fn(async () => {}) }));
-let directory: string, store: Store, app: ReturnType<typeof createApp>;
+let directory: string, store: Store, app: ReturnType<typeof singlePersonApp>;
 const headers = { Authorization: 'Bearer test-code', 'Content-Type': 'application/json' };
 const at = '2026-10-04T12:00:00.000Z';
 const cart: Cart = { id: 'cart', origin: 'request', status: 'approved', merchant: 'Target', createdAt: at, updatedAt: at,
@@ -28,7 +28,7 @@ const disconnect = () => app.request('/v1/retailers/target.com/auth', { method: 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'aeri-checkout-lifecycle-')); vi.stubEnv('DATA_DIR', directory); vi.stubEnv('KERNEL_API_KEY', 'test-never-used');
   for (const key of ['DATABASE_URL', 'EXA_API_KEY', 'GEMINI_API_KEY', 'NEON_AI_GATEWAY_API_KEY', 'NEON_AI_GATEWAY_TOKEN']) vi.stubEnv(key, '');
-  store = createStore('', directory); await store.update(state => state.carts.push(structuredClone(cart))); app = createApp(store, 'test-code');
+  store = createStore('', directory); await store.update(state => state.carts.push(structuredClone(cart))); app = singlePersonApp(store, 'test-code');
   vi.mocked(prepareMerchantCart).mockReset(); vi.mocked(closeSession).mockClear(); vi.mocked(disconnectMerchantAuth).mockClear();
 });
 afterEach(async () => { await app.service.idle(); await store.close(); vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }); });

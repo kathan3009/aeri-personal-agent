@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { normalizeName, type Cart } from '@personal-agent/core';
+import { registrableDomain } from './merchant-auth.js';
 
 export type ReceiptMessage = { subject?: string; preview?: string; text?: string; sender?: string | string[] };
 export type ReceiptCandidate = {
@@ -54,8 +55,10 @@ export function matchReceipt(message: ReceiptMessage, carts: Cart[], domains: Re
   const matches: ReceiptCandidate[] = [];
   for (const cart of carts) {
     if (cart.status !== 'ordered' || !cart.orderReference || !cart.merchant || !cart.items.length) continue;
-    const allowed = Object.entries(domains).find(([merchant]) => normalizeName(merchant) === normalizeName(cart.merchant!))?.[1] ?? [];
-    if (!allowed.some(entry => entry.toLowerCase() === domain) || !hasExactReference(text, cart.orderReference)) continue;
+    // The store's own site (from the cart's product links) plus the known sender domains for well-known stores.
+    const own = [cart.checkoutUrl, ...cart.items.map(item => item.offer?.url ?? item.retailerProductUrl)].flatMap(url => { try { return url ? [registrableDomain(new URL(url).hostname)] : []; } catch { return []; } });
+    const allowed = [...(Object.entries(domains).find(([merchant]) => normalizeName(merchant) === normalizeName(cart.merchant!))?.[1] ?? []), ...own].filter(Boolean).map(entry => entry!.toLowerCase());
+    if (!allowed.includes(domain) || !hasExactReference(text, cart.orderReference)) continue;
     // Use frozen product titles when available; generic name overlap can falsely match a different order.
     const matched = cart.items.filter(item => containsProduct(text, item.offer?.title ?? item.name));
     if (matched.length !== cart.items.length) continue;

@@ -1,5 +1,29 @@
 # Hackathon credit and account snapshot — October 4, 2026
 
+## Latest refresh — October 4, 2026, approximately 5:41 PM PDT
+
+The following balances were read from the signed-in sponsor dashboards during this refresh. They supersede the earlier balances recorded below. No credit purchase, plan change, API test or deployment was made during this audit. Dollar balances are separate provider pools and cannot be transferred or combined for billing.
+
+| Service | Remaining / allowance | Expiry or renewal shown |
+| --- | --- | --- |
+| [Neon main billing](https://console.neon.tech/app/org-sparkling-resonance-11984110/billing) | **$500.00**; $0.00 charges to date | Credit expiry not displayed. Billing period October 4–November 1 is not a credit expiry. |
+| [Neon AI Gateway](https://console.neon.tech/app/org-sparkling-resonance-11984110/billing#ai_gateway_credits) | **$499.52** of $500 granted; $0.48 consumed | Credit expiry not displayed; grant history records October 4. Balance timestamp around 5:37 PM PDT. |
+| [Fly.io](https://fly.io/dashboard/kathan-desai/billing) | **$500.00**, 0% used; upcoming invoice $0.00 | Credit expiry not displayed. |
+| Fly Sprites | Separate **$30.00 trial credit**, 0% used; storage allowances also shown | Trial credit expiry not displayed. Do not assume it is general Fly credit or add it to the $500 billing balance. |
+| [Exa](https://dashboard.exa.ai/billing) | **$68.89** | Popover: **$8.89 expires November 1, 2026**, **$50.00 expires November 3, 2026**. Remaining $10 has no displayed expiry in this popover. Free tier includes $10/month; credits expiring soonest are used first. |
+| [Kernel](https://dashboard.onkernel.com/hackathonevent/billing?project=j20xhx15aj6dnqp9glpab4gm) | **$54.48** remaining of $55.00; $0.52 used; no payment method | Counter says **resets October 31, 2026**. Startup trial end is displayed as **05/10/2026** without an unambiguous date format; the underlying grant expiry is not exposed. Do not infer all credit survives until reset. |
+| [Mastra](https://projects.mastra.ai/orgs/org_01M43WZNEBCQNES6BGNABT3MB9/settings/billing) | **$25.00 available**, now posted; auto top-up off; Starter $0/month. Hosted usage is zero. | Dollar credit expiry not displayed. Included usage resets **November 4, 2026**. |
+| [AgentMail](https://console.agentmail.to/dashboard/settings/billing) | Developer trial; **9 of 10 inbox slots remaining**, 10,000 emails/month; 0 sent and 1 received over the last 30 days; storage 7.4 KB of 10 GB | Trial ends **November 3, 2026**, then returns to Free. No card is attached. |
+| [Executor](https://executor.sh/kathan-desai-s-organization/billing) | Free; **100,000 executions remaining this month** (0 used); 1 of 3 member slots used; no card | Monthly allowance; exact reset date not displayed. Hackathon page also says free usage during the hack. |
+| CodeRabbit | Hackathon offer of **$1,000 per team**, account balance **unverified** because its account page requires sign-in | Current stack says to find **Erik at the co-host tables** for credits; no expiry shown. |
+| assistant-ui | Stack lists **$750 Best UI prize**, not prepaid API credit | Not a credit balance. |
+
+**Confirmed six main dollar balances: $1,647.89**, excluding the separately restricted $30 Sprites trial allowance and unverified CodeRabbit offer. Most sponsor credit expiry dates are not visible, so this audit does not claim perpetual validity.
+
+Kernel's plan comparison now verifies that Developer/Free lists **Managed Auth (3 connections)**, while Hobbyist and inherited Startup features include unlimited Managed Auth connections. The account is currently trialing Startup; the app's three-connection cap conservatively follows the Free plan. This refines the earlier explanation that the provider allowance had not been checked.
+
+## Earlier snapshots and implementation history
+
 This is a read-only snapshot of the signed-in billing dashboards. Neon was refreshed at ~11:35 AM PDT; the other providers were checked at ~11:20 AM PDT. A claim link or redemption code on the [hackathon stack](https://build-personal-agents.com/stack) is not proof that credit has posted. Do not run billable API tests, deploy, upgrade, or start a paid plan solely because an offer is listed. Provider keys and database URLs stay in the ignored local `.env`, never in Git.
 
 | Service | Confirmed in the account | Current constraint |

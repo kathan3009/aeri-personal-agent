@@ -6,7 +6,7 @@ The next acceptance test is a real phone walkthrough: **record visible objects �
 
 1. Start the API with `HOST=0.0.0.0 DATABASE_URL= DATA_DIR=.data-preview/expo npm run dev:api`. This preserves the no-card-charge boundary for Neon compute.
 2. Run `npm run dev:mobile`. If the bundle seems stale, restart Metro with `npx expo start --clear` from `apps/mobile`.
-3. Join the same Wi-Fi, open the Metro QR code in Expo Go, and set Aeri’s API address to the computer’s LAN URL. Enter the private access code from ignored `.env`; never paste it into chat.
+3. Join the same Wi-Fi, open the Metro QR code in Expo Go, and set Aeri’s API address to the computer’s LAN URL. Sign in with your email and the code Aeri sends.
 4. Check Settings shows vision, voice and Gateway configured. A public Metro tunnel does not automatically expose the separate LAN API.
 
 ## Verify real media first

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { validatePurchaseApproval, type Cart, type PurchaseApproval } from '@personal-agent/core';
 import type { MerchantSummary } from './merchant-summary.js';
-import { createApp } from './app.js';
+import { singlePersonApp } from './testing.js';
 import { readMerchantSummary, closeSession } from './market.js';
 import { createStore, type Store } from './store.js';
 
@@ -12,7 +12,7 @@ vi.mock('./market.js', async () => ({ ...(await vi.importActual<typeof import('.
 const at = '2026-10-04T12:00:00.000Z';
 const headers = { Authorization: 'Bearer test-code', 'Content-Type': 'application/json' };
 let directory: string, store: Store;
-let app: ReturnType<typeof createApp>;
+let app: ReturnType<typeof singlePersonApp>;
 const cart: Cart = {
   id: 'cart', origin: 'request', status: 'checkout_ready', merchant: 'Target', checkoutUrl: 'https://www.target.com/checkout', createdAt: at, updatedAt: at,
   checkout: { mode: 'kernel', sessionId: 'mock-session', openedAt: at, status: 'ready', note: 'Fixture hosted cart', lines: [] },
@@ -34,7 +34,7 @@ beforeEach(async () => {
   for (const key of ['DATABASE_URL', 'KERNEL_API_KEY', 'EXA_API_KEY', 'GEMINI_API_KEY', 'NEON_AI_GATEWAY_API_KEY', 'NEON_AI_GATEWAY_TOKEN']) vi.stubEnv(key, '');
   directory = await mkdtemp(join(tmpdir(), 'aeri-checkout-flow-')); vi.stubEnv('DATA_DIR', directory);
   store = createStore('', directory); await store.update(state => state.carts.push(structuredClone(cart)));
-  app = createApp(store, 'test-code');
+  app = singlePersonApp(store, 'test-code');
   vi.mocked(readMerchantSummary).mockReset(); vi.mocked(readMerchantSummary).mockImplementation(async () => summary());
   vi.mocked(closeSession).mockClear();
 });

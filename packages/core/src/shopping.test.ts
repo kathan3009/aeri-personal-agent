@@ -11,6 +11,39 @@ const offer = (o: Partial<Offer> & Pick<Offer, 'needId' | 'merchant' | 'priceCen
 const quote = (q: Partial<StoreQuote> & Pick<StoreQuote, 'merchant' | 'fulfillment'>): StoreQuote => ({ deliveryFeeCents: 0, serviceFeeCents: 0, minimumOrderCents: null, smallOrderFeeCents: null, taxRate: 0, tipCents: 0, distanceMiles: 2, distanceMeasure: 'straight_line', etaMinutes: 60, capturedAt: at, source: 'fixture', ...q });
 
 describe('basket comparison', () => {
+  const request = { optimize: 'lowest_total' as const, fulfillment: 'either' as const, substitutions: 'ask' as const, preferredMerchants: [], avoid: [] };
+  const live = (merchant: string) => quote({ merchant, fulfillment: 'delivery', deliveryFeeCents: null, serviceFeeCents: null, taxRate: null, tipCents: null, distanceMiles: null, distanceMeasure: null });
+  const four = [...needs, { id: 'flour', name: 'Flour', quantity: { amount: 1, unit: 'kg' as const } }, { id: 'vanilla', name: 'Vanilla', quantity: { amount: 1, unit: 'each' as const } }];
+
+  it('moves what the first store lacks to another store, even when fees are unknown', () => {
+    const offers = [
+      offer({ needId: 'tom', merchant: 'Target', priceCents: 300 }), offer({ needId: 'pasta', merchant: 'Target', priceCents: 200 }),
+      offer({ needId: 'flour', merchant: 'Walmart', priceCents: 400 }), offer({ needId: 'vanilla', merchant: 'Walmart', priceCents: 600 }), offer({ needId: 'tom', merchant: 'Walmart', priceCents: 350 }),
+    ];
+    const result = compareBaskets(four, offers, [live('Target'), live('Walmart')], request, id);
+    const best = result.baskets.find(b => b.id === result.recommendedId)!;
+    expect(best.missing).toBe(0);
+    expect(best.merchants).toEqual(['Target', 'Walmart']);
+    // Tomatoes stay at Target; only what Target lacks moves.
+    expect(best.lines.find(l => l.needId === 'tom')).toMatchObject({ merchant: 'Target' });
+    expect(best.lines.filter(l => l.movedFrom).map(l => [l.needId, l.merchant, l.movedFrom])).toEqual([['flour', 'Walmart', 'Target'], ['vanilla', 'Walmart', 'Target']]);
+    expect(result.explanation).toMatch(/Target doesn’t have 2 items; Walmart has them\./);
+  });
+
+  it('keeps an item no store has as missing and never offers a split that finds nothing extra', () => {
+    const offers = [offer({ needId: 'tom', merchant: 'A', priceCents: 300 }), offer({ needId: 'pasta', merchant: 'A', priceCents: 200 }), offer({ needId: 'tom', merchant: 'B', priceCents: 250 })];
+    const result = compareBaskets(four, offers, [live('A'), live('B')], request, id);
+    expect(result.baskets.every(b => b.merchants.length === 1)).toBe(true);
+    expect(result.baskets[0].missing).toBe(2);
+  });
+
+  it('does not describe a basket with no readable prices as a $0 total', () => {
+    const offers = needs.map(n => offer({ needId: n.id, merchant: 'Target', priceCents: null }));
+    const result = compareBaskets(needs, offers, [live('Target')], request, id);
+    expect(result.explanation).toMatch(/no prices read yet/);
+    expect(result.explanation).not.toMatch(/\$0\.00/);
+  });
+
   it('counts packs from pack sizes', () => {
     expect(packsFor({ amount: 500, unit: 'g' }, { amount: 1, unit: 'lb' })).toEqual({ packs: 2 });
     expect(packsFor({ amount: 4, unit: 'each' })).toEqual({ packs: 4 });
@@ -46,7 +79,7 @@ describe('basket comparison', () => {
     const offers = [offer({ needId: 'tom', merchant: 'A', priceCents: 300 }), offer({ needId: 'pasta', merchant: 'A', priceCents: null, verified: false, source: 'exa' })];
     const result = compareBaskets(needs, offers, [quote({ merchant: 'A', fulfillment: 'delivery', deliveryFeeCents: null, serviceFeeCents: null, taxRate: null, tipCents: null, distanceMiles: null, distanceMeasure: null })], { optimize: 'lowest_total', fulfillment: 'either', substitutions: 'ask', preferredMerchants: [], avoid: [] }, id);
     expect(result.explanation).not.toMatch(/lowest all-in cost/);
-    expect(result.explanation).toMatch(/^No store has a complete total yet\. A delivery: \$12\.00 so far, without 1 price, fees, tax and tip\./);
+    expect(result.explanation).toBe('A delivery: 2 of 2 items found, $12.00 so far. Fees, tax and any remaining prices are confirmed at checkout.');
   });
 
   it('proposes a two-store split only when it beats both single stores after fees', () => {
@@ -131,5 +164,32 @@ describe('photo search', () => {
       candidate({ id: 'a', match: 'likely', merchant: 'walmart.com' }), candidate({ id: 'b', match: 'likely', merchant: 'target.com' }), candidate({ id: 'e', match: 'exact', merchant: 'kroger.com' }),
     ], c);
     expect(list.map(x => x.id)).toEqual(['e', 'b', 'a']);
+  });
+});
+
+describe('recipe lines become a list someone would shop from', () => {
+  const line = (name: string, amount: number, unit: string, i: number) => ({ id: String(i), name, quantity: { amount, unit: unit as 'each' }, optional: false, estimatedPriceCents: null, status: 'needed' as const });
+  it('drops prep notes, merges the same ingredient across steps and sets water and salt aside', async () => {
+    const { shoppable, shoppingName } = await import('./index');
+    expect(['Tomatoes (diced and deseeded)', 'Dry mango powder (Amchur)', 'Melted butter', 'Fresh coriander (chopped)', 'Onion petals'].map(shoppingName)).toEqual(['Tomatoes', 'Dry mango powder (Amchur)', 'Butter', 'Coriander', 'Onion']);
+    const { items, skipped } = shoppable([['Onion (diced)', 1, 'each'], ['Onion (finely chopped)', 2, 'each'], ['Onion petals', 0.5, 'cup'], ['Cumin seeds (Jeera)', 1, 'tbsp'], ['Cumin seeds (Jeera)', 1, 'tsp'], ['Hot water', 100, 'ml'], ['Salt', 1, 'tsp']].map(([n, a, u], i) => line(n as string, a as number, u as string, i)));
+    expect(items.map(i => [i.name, i.quantity.amount, i.quantity.unit])).toEqual([['Onion', 4, 'each'], ['Cumin seeds (Jeera)', 1.33, 'tbsp']]);
+    expect(skipped.map(i => i.name)).toEqual(['Water', 'Salt']);
+  });
+});
+
+describe('saved sizes in photo searches', () => {
+  it('uses only the size that fits the item and never types it into the search', async () => {
+    const { buildConstraints, searchQuery, sizeFor } = await import('./index');
+    const saved = { 'clothing sizes': 'Large size T-shirt, 32 jeans', 'favourite store': 'Target' };
+    const cap = { name: 'baseball cap', brand: 'foundr.', category: 'clothing' as const, color: 'beige and black', visibleText: [], uncertain: [], confidence: 0.9 };
+    const capConstraints = buildConstraints(cap as never, '', saved);
+    expect(capConstraints.size).toBeUndefined();
+    expect(searchQuery(cap as never, capConstraints)).toBe('foundr. baseball cap beige and black');
+    expect(sizeFor('crew neck t-shirt', saved['clothing sizes'])).toBe('Large');
+    expect(sizeFor('slim jeans', saved['clothing sizes'])).toBe('32');
+    const shirt = buildConstraints({ ...cap, name: 'crew neck t-shirt' } as never, '', saved);
+    expect(shirt.size).toBe('Large');
+    expect(searchQuery({ ...cap, name: 'crew neck t-shirt' } as never, shirt)).not.toMatch(/Large|32/);
   });
 });

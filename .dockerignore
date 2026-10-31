@@ -8,3 +8,7 @@ dist
 *.log
 apps/mobile/**
 !apps/mobile/package.json
+.data-preview
+.playwright-mcp
+.agents
+*.png

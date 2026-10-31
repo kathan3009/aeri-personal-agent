@@ -55,6 +55,16 @@ export function deliveredQuantity(item: CartItem): Quantity {
     ? { amount: offer.packSize.amount * offer.packs, unit: offer.packSize.unit }
     : { ...item.quantity };
 }
+/**
+ * Why a store didn't take an item. `age_check` (ID or 21+ confirmation), `sign_in` and `address` need the person;
+ * the rest explain what happened.
+ */
+export const blockReasonSchema = z.enum(['age_check', 'sign_in', 'address', 'bot_check', 'store_limited', 'out_of_stock', 'not_found', 'minimum_order', 'quantity_limit', 'other']);
+export type BlockReason = z.infer<typeof blockReasonSchema>;
+/** Reasons only the person can resolve. */
+export const needsPerson = (reason?: BlockReason) => reason === 'age_check' || reason === 'sign_in' || reason === 'address';
+export const traceStepSchema = z.object({ at: z.string(), step: z.string(), detail: z.string().max(300), ok: z.boolean(), store: z.string().optional(), ms: z.number().int().nonnegative().optional() });
+export type TraceStep = z.infer<typeof traceStepSchema>;
 export const cartSchema = z.object({
   id: z.string(), recipeId: z.string().optional(), title: z.string().optional(),
   origin: z.enum(['recipe', 'photo', 'request']).default('recipe'), items: z.array(cartItemSchema),
@@ -66,9 +76,24 @@ export const cartSchema = z.object({
   checkout: z.object({
     mode: z.enum(['manual', 'kernel']), note: z.string(), sessionId: z.string().optional(), preparationId: z.string().optional(), openedAt: z.string(),
     status: z.enum(['preparing', 'ready', 'failed']).default('ready'), closedAt: z.string().optional(),
-    lines: z.array(z.object({ itemId: z.string(), result: z.enum(['added', 'unavailable', 'substituted', 'uncertain']), detail: z.string().optional() })).default([]),
+    /** `signed_in`: the cart is in the person's own store account (they check out in the store's app). `guest`: it
+     * exists only in Aeri's private browser. `cartUrl` opens that store's cart. */
+    account: z.enum(['signed_in', 'guest']).optional(), cartUrl: z.string().url().optional(),
+    lines: z.array(z.object({ itemId: z.string(), result: z.enum(['added', 'unavailable', 'substituted', 'uncertain']), detail: z.string().optional(),
+      /** Why an item wasn't added, so the app can say what to do about it. */
+      reason: blockReasonSchema.optional() })).default([]),
+    /** Identifies this store visit in server logs and error reports. */
+    runId: z.string().optional(),
+    /** What Aeri did at the store, step by step (most recent last, capped). */
+    trace: z.array(traceStepSchema).max(120).optional(),
   }).optional(),
   receivedAt: z.string().optional(),
+  /** Items no checked store had. They are set aside at approval so the rest can still be bought. */
+  skipped: z.array(cartItemSchema).optional(),
+  /** An order number read from the store's confirmation email. Shown for the person to confirm; never applied alone. */
+  suggestedOrderReference: z.object({ reference: z.string(), from: z.string(), at: z.string() }).optional(),
+  /** A list approved across several stores becomes one order per store; these link them. */
+  splitInto: z.array(z.string()).optional(), splitFrom: z.string().optional(),
   checkoutSnapshot: checkoutSnapshotSchema.optional(), purchaseApproval: purchaseApprovalSchema.optional(),
   createdAt: z.string(), updatedAt: z.string(),
 });
@@ -142,10 +167,42 @@ export function missingIngredients(recipe: Recipe, inventory: InventoryItem[], n
 }
 
 export function createCart(recipe: Recipe, inventory: InventoryItem[], now: string, id: () => string): Cart {
-  const items = planIngredients(recipe, inventory, now).filter(line => line.buy).map(line => ({
+  const lines = planIngredients(recipe, inventory, now).filter(line => line.buy).map(line => ({
     ...line.ingredient, quantity: line.buy!, id: id(), estimatedPriceCents: null, status: 'needed' as const, ...(line.check ? { check: line.check } : {}),
   }));
-  return { id: id(), recipeId: recipe.id, title: recipe.title, origin: 'recipe', items, status: 'draft', createdAt: now, updatedAt: now };
+  const { items, skipped } = shoppable(lines);
+  return { id: id(), recipeId: recipe.id, title: recipe.title, origin: 'recipe', items, ...(skipped.length ? { skipped } : {}), status: 'draft', createdAt: now, updatedAt: now };
+}
+
+// Kitchen prep words describe what to do at home, not what to buy.
+const prep = /\b(finely|roughly|thinly|freshly|chopped|diced|deseeded|seeded|sliced|minced|grated|crushed|melted|softened|julienned|cubed|peeled|halved|quartered|beaten|boiled|soaked|blanched|steamed|toasted|cooked|reserved|roasted and ground|to taste|for garnish|as needed|optional|petals|stems?|leaves)\b/gi;
+/** "Tomatoes (diced and deseeded)" → "Tomatoes"; "Dry mango powder (Amchur)" keeps its other name. */
+export function shoppingName(name: string): string {
+  const withoutPrep = name.replace(/\(([^)]*)\)/g, (whole, inside: string) => prep.test(inside) ? (prep.lastIndex = 0, '') : (prep.lastIndex = 0, whole));
+  const cleaned = withoutPrep.replace(prep, '').replace(/^\s*(hot|cold|warm|melted|thick|fresh)\s+/i, '').replace(/\s{2,}/g, ' ').replace(/\s+([,)])/g, '$1').replace(/[,\s]+$/, '').trim();
+  return cleaned ? cleaned.replace(/^\w/, letter => letter.toUpperCase()) : name;
+}
+// Things nearly every kitchen has; they're set aside visibly rather than bought.
+const staples = /^((pasta|cooking|tap|hot|cold|warm|boiling)\s+)?water$|^(ice|ice cubes|salt|table salt)$/i;
+/**
+ * Turns recipe lines into a list someone would actually shop from: prep notes removed, the same ingredient used in
+ * several steps combined into one line, and water or salt set aside.
+ */
+export function shoppable(lines: CartItem[]): { items: CartItem[]; skipped: CartItem[] } {
+  const items: CartItem[] = [], skipped: CartItem[] = [];
+  for (const line of lines) {
+    const name = shoppingName(line.name);
+    if (staples.test(normalizeName(name)) || staples.test(name)) { skipped.push({ ...line, name }); continue; }
+    const same = items.find(item => normalizeName(item.name) === normalizeName(name));
+    if (!same) { items.push({ ...line, name }); continue; }
+    const a = toBase(same.quantity), b = toBase(line.quantity);
+    if (a.dimension === b.dimension) same.quantity = { amount: Math.round((same.quantity.amount + line.quantity.amount * (b.amount / line.quantity.amount) / (a.amount / same.quantity.amount)) * 100) / 100, unit: same.quantity.unit };
+    // A counted ingredient also used by volume ("2 onions" and "half a cup of onion") needs about one more.
+    else if (same.quantity.unit === 'each') same.quantity = { amount: same.quantity.amount + 1, unit: 'each' };
+    else if (line.quantity.unit === 'each') same.quantity = { amount: line.quantity.amount + 1, unit: 'each' };
+    if (line.check && !same.check) same.check = line.check;
+  }
+  return { items, skipped };
 }
 
 export function scaleRecipe(recipe: Recipe, servings: number): Recipe {

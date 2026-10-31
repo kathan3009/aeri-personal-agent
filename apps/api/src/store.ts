@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import postgres from 'postgres';
 import { appStateSchema, emptyState, type AppState } from '@personal-agent/core';
@@ -15,14 +15,20 @@ export interface Store {
   deleteLiveView(cartId: string): Promise<void>;
   setMerchantConnection(connection: MerchantConnection): Promise<void>;
   getMerchantConnection(merchant: string): Promise<MerchantConnection | null>;
+  listMerchantConnections(): Promise<MerchantConnection[]>;
   deleteMerchantConnection(merchant: string): Promise<void>;
   claimReceipt(eventId: string): Promise<boolean>;
+  /** Permanently removes everything stored for this person (account deletion). */
+  wipe(): Promise<void>;
   close(): Promise<void>;
 }
 
 type Sql = postgres.Sql | postgres.TransactionSql;
-type StoreOptions = { retention?: RetentionLimits; now?: () => Date };
-const scope = 'default';
+/** `scope` is the person this store belongs to; `sql` shares one database pool across people. */
+type StoreOptions = { retention?: RetentionLimits; now?: () => Date; scope?: string; sql?: postgres.Sql };
+const pools = new Map<string, postgres.Sql>();
+/** One small connection pool per database for the whole server, shared by every person's store. */
+export const sharedSql = (databaseUrl: string) => { let sql = pools.get(databaseUrl); if (!sql) { sql = postgres(databaseUrl, { max: Number(process.env.DATABASE_POOL_SIZE ?? 5), ssl: 'require' }); pools.set(databaseUrl, sql); } return sql; };
 const tableNames: Record<EntityKey, string> = { inventory: 'aeri_inventory', recipes: 'aeri_recipes', carts: 'aeri_carts', scans: 'aeri_scans', messages: 'aeri_messages', tasks: 'aeri_tasks', events: 'aeri_events', photoSearches: 'aeri_photo_searches', proposals: 'aeri_proposals' };
 const projectionNames = ['offers', 'approvals', 'cart_approvals', 'orders', 'inventory_events'] as const;
 const liveSchema = z.object({ sessionId: z.string().min(1), url: z.string().url().refine(url => new URL(url).protocol === 'https:'), expiresAt: z.iso.datetime() });
@@ -33,8 +39,14 @@ const maxReceiptClaims = 10_000;
 
 /** No configured database uses atomic local files. Database failures fail closed rather than silently forking data. */
 export function createStore(databaseUrl = process.env.DATABASE_URL, dataDir = process.env.DATA_DIR ?? '.data', options: StoreOptions = {}): Store {
-  const sql = databaseUrl ? postgres(databaseUrl, { max: 1, ssl: 'require' }) : null;
-  const file = resolve(import.meta.dirname, '../../../', dataDir, 'state.json');
+  const scope = options.scope ?? 'default';
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(scope)) throw new Error('Invalid store scope');
+  const ownsSql = !options.sql && !!databaseUrl;
+  const sql = options.sql ?? (databaseUrl ? postgres(databaseUrl, { max: 1, ssl: 'require' }) : null);
+  // The original single-person data stays where it was; everyone else gets their own folder.
+  const root = resolve(import.meta.dirname, '../../../', dataDir);
+  const folder = scope === 'default' ? root : resolve(root, 'users', scope);
+  const file = resolve(folder, 'state.json');
   const privateFile = resolve(dirname(file), 'private-sessions.json');
   const now = options.now ?? (() => new Date());
   const limits = options.retention ?? defaultRetention;
@@ -83,7 +95,7 @@ export function createStore(databaseUrl = process.env.DATABASE_URL, dataDir = pr
       await db`create table if not exists aeri_receipt_claims (scope text not null, event_id text not null, claimed_at timestamptz not null, primary key (scope, event_id))`;
       const migrated = await db`select version from aeri_schema where scope = ${scope}`;
       if (!migrated.length) {
-        const legacyExists = await db`select to_regclass('public.agent_state') as name`;
+        const legacyExists = scope === 'default' ? await db`select to_regclass('public.agent_state') as name` : [];
         const legacy = legacyExists[0]?.name ? await db`select body from agent_state where id = ${scope}` : [];
         // Preserve original state for rollback; later writes only update entity tables.
         await saveDb(db, retainState(legacy.length ? appStateSchema.parse(legacy[0].body) : emptyState(), limits));
@@ -100,11 +112,11 @@ export function createStore(databaseUrl = process.env.DATABASE_URL, dataDir = pr
   };
   const loadPrivate = async () => privateSchema.parse(await readLocal(privateFile) ?? {});
   return {
-    read: () => enqueue(async () => { await setup(); return sql ? sql.begin(async db => { await db`select pg_advisory_xact_lock(1968421)`; return loadDb(db); }) : appStateSchema.parse(await readLocal(file) ?? emptyState()); }),
+    read: () => enqueue(async () => { await setup(); return sql ? sql.begin(async db => { await db`select pg_advisory_xact_lock(1968421, hashtext(${scope}))`; return loadDb(db); }) : appStateSchema.parse(await readLocal(file) ?? emptyState()); }),
     update: <T>(change: (state: AppState) => T | Promise<T>) => enqueue(async (): Promise<T> => {
       await setup();
       if (sql) return sql.begin(async db => {
-        await db`select pg_advisory_xact_lock(1968421)`;
+        await db`select pg_advisory_xact_lock(1968421, hashtext(${scope}))`;
         const prior = await loadDb(db), state = structuredClone(prior);
         const result = await change(state); await saveDb(db, retainState(state, limits), prior); return result;
       }) as Promise<T>;
@@ -137,12 +149,13 @@ export function createStore(databaseUrl = process.env.DATABASE_URL, dataDir = pr
       else { const data = await loadPrivate(); data.merchantConnections[value.merchant] = value; await atomicWrite(privateFile, data); }
     }),
     getMerchantConnection: merchant => enqueue(async () => { await setup(); if (sql) { const rows = await sql`select body from aeri_merchant_connections where scope = ${scope} and merchant = ${merchant}`; return rows.length ? connectionSchema.parse(rows[0].body) : null; } return (await loadPrivate()).merchantConnections[merchant] ?? null; }),
+    listMerchantConnections: () => enqueue(async () => { await setup(); if (sql) { const rows = await sql`select body from aeri_merchant_connections where scope = ${scope}`; return rows.map(row => connectionSchema.parse(row.body)); } return Object.values((await loadPrivate()).merchantConnections); }),
     deleteMerchantConnection: merchant => enqueue(async () => { await setup(); if (sql) await sql`delete from aeri_merchant_connections where scope = ${scope} and merchant = ${merchant}`; else { const data = await loadPrivate(); delete data.merchantConnections[merchant]; await atomicWrite(privateFile, data); } }),
     claimReceipt: eventId => enqueue(async () => {
       if (!eventId || eventId.length > 256) throw new Error('A valid receipt event identifier is required');
       await setup(); const cutoff = new Date(now().getTime() - receiptRetentionMs).toISOString();
       if (sql) return sql.begin(async db => {
-        await db`select pg_advisory_xact_lock(1968421)`;
+        await db`select pg_advisory_xact_lock(1968421, hashtext(${scope}))`;
         await db`delete from aeri_receipt_claims where scope = ${scope} and claimed_at <= ${cutoff}`;
         if ((await db`select event_id from aeri_receipt_claims where scope = ${scope} and event_id = ${eventId}`).length) return false;
         const counts = await db`select count(*)::int as count from aeri_receipt_claims where scope = ${scope}`;
@@ -157,6 +170,18 @@ export function createStore(databaseUrl = process.env.DATABASE_URL, dataDir = pr
       Object.defineProperty(data.receiptClaims, eventId, { value: now().toISOString(), enumerable: true, writable: true, configurable: true });
       await atomicWrite(privateFile, data); return true;
     }),
-    close: async () => { await queue; if (sql) await sql.end(); },
+    wipe: () => enqueue(async () => {
+      await setup();
+      if (sql) {
+        await sql.begin(async db => {
+          await db`select pg_advisory_xact_lock(1968421, hashtext(${scope}))`;
+          for (const table of [...Object.values(tableNames), ...projectionNames.map(key => `aeri_${key}`), 'aeri_preferences', 'aeri_live_views', 'aeri_merchant_connections', 'aeri_receipt_claims', 'aeri_schema']) await db`delete from ${db(table)} where scope = ${scope}`;
+        });
+        return;
+      }
+      if (scope === 'default') { await rm(file, { force: true }); await rm(privateFile, { force: true }); }
+      else await rm(folder, { recursive: true, force: true });
+    }),
+    close: async () => { await queue; if (sql && ownsSql) await sql.end(); },
   };
 }

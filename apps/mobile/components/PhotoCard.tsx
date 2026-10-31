@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
-import { CircleAlert, ExternalLink, ScanSearch, ShieldCheck } from 'lucide-react-native';
+import { ChevronRight, CircleAlert, ExternalLink, ScanSearch, ShieldCheck } from 'lucide-react-native';
 import type { Candidate, PhotoSearch } from '@personal-agent/core';
 import { useApp } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
@@ -68,7 +68,8 @@ export function PhotoCard({ search }: { search: PhotoSearch }) {
     {!!spec.visibleText.length && <Text style={[t.footnote, { marginTop: 8 }]} numberOfLines={2}>Label reads: “{spec.visibleText.slice(0, 4).join('”, “')}”</Text>}
     {(spec.uncertain.length > 0 || spec.closeUp) && <Text style={[t.footnote, { color: '#875810', marginTop: 6 }]}>{spec.closeUp ?? `The photo doesn’t show the ${spec.uncertain.join(' or ')} clearly. A closer photo of the label helps.`}</Text>}
     {!!search.constraints?.applied.length && <View style={styles.chips}>{search.constraints.applied.slice(0, 5).map(a => <Tag key={a} label={a} />)}</View>}
-    <Group style={styles.inner}>
+    {shown.length > 0 && <Text style={[t.subhead, styles.pick]}>Tap the one you want</Text>}
+    <Group style={[styles.inner, shown.length > 0 && { marginTop: 8 }]}>
       {shown.map(candidate => <Pressable key={candidate.id} onPress={() => { haptic.tap(); setOpen(candidate); }} style={({ pressed }) => [styles.row, pressed && { backgroundColor: c.fill }]} accessibilityRole="button"
         accessibilityLabel={`${matchLabel[candidate.match].label}: ${candidate.title} at ${candidate.merchant}. ${evidence(candidate)}`}>
         <View style={{ flex: 1 }}>
@@ -76,6 +77,7 @@ export function PhotoCard({ search }: { search: PhotoSearch }) {
           <Text style={[t.callout, { marginTop: 4 }]} numberOfLines={2}>{candidate.title}</Text>
           <Text style={[t.footnote, { marginTop: 2, color: candidate.verification?.status === 'verified' ? c.ink2 : c.ink3 }]} numberOfLines={2}>{evidence(candidate)}</Text>
         </View>
+        <ChevronRight size={18} color={c.ink3} strokeWidth={2} />
       </Pressable>)}
       {!shown.length && <View style={styles.row}><Text style={t.subhead}>No result fits what you asked for yet.</Text></View>}
     </Group>
@@ -105,7 +107,8 @@ const styles = StyleSheet.create({
   sampleNote: { marginTop: 10, backgroundColor: c.sunriseTint, color: '#6B4A12', borderRadius: 12, padding: 10, overflow: 'hidden' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
   inner: { marginTop: 14, backgroundColor: c.canvas },
-  row: { paddingHorizontal: 14, paddingVertical: 12, minHeight: 56 },
+  row: { paddingHorizontal: 14, paddingVertical: 12, minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  pick: { marginTop: 16, marginLeft: 4, color: c.ink, fontWeight: '600' },
   rowTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   reason: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginTop: 8 },
 });

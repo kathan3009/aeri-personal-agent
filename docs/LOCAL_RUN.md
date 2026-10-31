@@ -1,14 +1,14 @@
 # Check Aeri on your iPhone
 
-The local build uses one private owner account: there is no signup screen. Its access code protects your agent. Retailer sign-ins are separate.
+Everyone signs in with their email: Aeri emails a 6-digit code (from `aeri-sign-in@agentmail.to`), and each email gets its own private account, memory, store sign-ins and Aeri email address. Set `AERI_OWNER_EMAIL` in `.env` to your email first, so your existing memory and store sign-ins become your account. Retailer sign-ins are separate.
 
 ## Open Expo Go
 
 1. Keep this Mac awake and put the iPhone on the same Wi-Fi. Install/open Expo Go from the App Store.
 2. Scan the QR shown by Codex with the iPhone Camera. The development URL is `exp://192.168.6.109:8085`.
-3. On Aeri's Connect screen use **Server address:** `http://192.168.6.109:8790`.
-4. Copy your Aeri access code from the private `.data-preview/iphone-connection.txt` file opened by Codex (also stored as **APP_ACCESS_TOKEN** in ignored root `.env`) into **Access code**, then tap **Connect**. Do not enter a Neon, Kernel, Exa or Google API key. This code stays in the iPhone's SecureStore.
-5. Allow Local Network access. Allow camera/photos/microphone when you use those features. If already connected to an old server, use **Settings and connection → Disconnect**, then reconnect to this address.
+3. The app uses `EXPO_PUBLIC_API_URL` from `apps/mobile/.env.local` (a development build can also tap **Use a different server**).
+4. Enter your email, tap **Send code**, and type the 6-digit code from the email. Without AgentMail configured, a development server shows the code instead. The session token stays in the iPhone's SecureStore; sign out in Settings.
+5. Allow Local Network access. Allow camera/photos/microphone when you use those features.
 
 The current LAN address may change when the Mac switches networks. Restart with the new address if necessary. No Expo account is required to connect to the local development build.
 
@@ -16,7 +16,7 @@ The current LAN address may change when the Mac switches networks. Restart with 
 
 1. In **Memory → Preferences**, set your ZIP under Location, favorite stores, budget, allergies, preferred brands and clothing/shoe sizes. You can also say these through Voice.
 2. In **Memory → Shopping → Store accounts**, choose Target, Walmart or Instacart, then **Continue to [store]** to consent to saving that retailer browser session.
-3. Sign in on the hosted retailer page, including any MFA yourself, and return to Aeri. The account should show **Connected**. Aeri does not ask for your store password. The free Kernel plan allows up to three connections.
+3. Sign in on the hosted retailer page, including any MFA yourself, and return to Aeri. The account should show **Connected**. Aeri does not ask for your store password. Aeri keeps up to 10 stores signed in (`KERNEL_MAX_STORE_CONNECTIONS`); failed or expired sign-ins don't count. If Kernel's own plan refuses another, the app says so.
 4. Start with Target for the ZIP store-picker adapter. Other store selection remains manual when Aeri cannot confirm it. Retailer bots, unsupported login methods and live selectors may still need your takeover; none have been claimed as a verified signed-in purchase flow.
 
 ## Your first end-to-end run

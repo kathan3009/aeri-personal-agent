@@ -68,6 +68,8 @@ export async function readFrame(scanId: string, name: string): Promise<Uint8Arra
   if (!/^[a-zA-Z0-9_-]+\.jpg$/.test(name)) return null;
   try { return await readFile(join(evidenceDir(), safe(scanId), name)); } catch { return null; }
 }
+/** Removes a scan's saved frames (account deletion). */
+export async function removeFrames(scanId: string) { await rm(join(evidenceDir(), safe(scanId)), { recursive: true, force: true }); }
 /** Keeps only frames for sightings the person accepted. */
 export async function pruneFrames(scanId: string, keep: Set<string>) {
   const dir = join(evidenceDir(), safe(scanId));

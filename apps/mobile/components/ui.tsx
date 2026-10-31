@@ -112,7 +112,8 @@ function PopIn({ children }: { children: ReactNode }) {
 }
 
 export function Glass({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
-  if (liquidGlass) return <GlassView glassEffectStyle="regular" tintColor="rgba(235,245,252,0.5)" style={style}>{children}</GlassView>;
+  // Tinted enough that text scrolling underneath never competes with the tab labels.
+  if (liquidGlass) return <GlassView glassEffectStyle="regular" tintColor="rgba(242,247,251,0.82)" style={style}>{children}</GlassView>;
   if (Platform.OS === 'ios') return <View style={[lift, style, { overflow: 'visible' }]}>
     <BlurView intensity={80} tint="systemChromeMaterialLight" style={[StyleSheet.absoluteFill, styles.blur, { borderRadius: StyleSheet.flatten(style)?.borderRadius ?? 0 }]} />
     {children}
